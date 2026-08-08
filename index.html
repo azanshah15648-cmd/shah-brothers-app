@@ -1,0 +1,1721 @@
+<!DOCTYPE html>
+<html lang="ur">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Shah Brothers Chicken Wastage — Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+  html, body, #root { margin:0; padding:0; min-height:100vh; }
+  * { box-sizing: border-box; }
+</style>
+
+<!-- React -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<!-- Babel (in-browser JSX compiler, no build step needed) -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Firebase (Realtime Database) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  // ---- Firebase setup ----
+  const firebaseConfig = {
+    apiKey: "AIzaSyBaMalavfe4iegNAhdFzdlmYm1X74EHeZs",
+    authDomain: "shah-brother.firebaseapp.com",
+    databaseURL: "https://shah-brother-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "shah-brother",
+    storageBucket: "shah-brother.firebasestorage.app",
+    messagingSenderId: "1097676510247",
+    appId: "1:1097676510247:web:84ff837bf972675abfaa02"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  // ---- window.storage shim (drop-in, same shape the app expects) ----
+  window.storage = {
+    get: async function (key, shared) {
+      const snap = await db.ref('ledger/' + key).once('value');
+      if (!snap.exists()) {
+        throw new Error('Key not found: ' + key);
+      }
+      return { key: key, value: snap.val(), shared: !!shared };
+    },
+    set: async function (key, value, shared) {
+      await db.ref('ledger/' + key).set(value);
+      return { key: key, value: value, shared: !!shared };
+    },
+    delete: async function (key, shared) {
+      await db.ref('ledger/' + key).remove();
+      return { key: key, deleted: true, shared: !!shared };
+    },
+    list: async function (prefix, shared) {
+      const snap = await db.ref('ledger').once('value');
+      const all = snap.val() || {};
+      const keys = Object.keys(all).filter((k) => !prefix || k.startsWith(prefix));
+      return { keys: keys, prefix: prefix, shared: !!shared };
+    },
+  };
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+/* ---------------------------------------------------------
+   SHAH BROTHERS CHICKEN WASTAGE — LEDGER SYSTEM
+   Roles: Owner (password) / Worker (code) / Dukandar (PIN)
+--------------------------------------------------------- */
+
+const ITEMS = ["Dum", "Kachra", "Charbi", "Machli", "Paya"];
+const ITEM_KEYS = ["dum", "kachra", "charbi", "machli", "paya"];
+
+const COLORS = {
+  bg: "#F4ECDD",
+  card: "#FFFCF6",
+  maroon: "#3A0E12",
+  maroonDeep: "#2A0A0D",
+  red: "#B32133",
+  redBright: "#C9313F",
+  gold: "#B9862F",
+  goldLight: "#E7C878",
+  ink: "#2A1E19",
+  inkSoft: "#6B5B4F",
+  line: "#E4D6BE",
+  ok: "#3E6B4A",
+  warn: "#9C5B14",
+};
+
+function monthKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function monthLabel(mk) {
+  const [y, m] = mk.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function fmtDate(iso) {
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+function displayName(obj) {
+  if (!obj) return "";
+  return obj.nameUrdu ? `${obj.name} / ${obj.nameUrdu}` : obj.name;
+}
+
+function uid(prefix) {
+  return prefix + Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+function pastMonths(count = 15) {
+  const arr = [];
+  const now = new Date();
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    arr.push(monthKey(d));
+  }
+  return arr;
+}
+function money(n) {
+  const v = Number(n) || 0;
+  return "Rs " + v.toLocaleString("en-PK", { maximumFractionDigits: 0 });
+}
+function sum(arr, fn) {
+  return arr.reduce((a, b) => a + (Number(fn(b)) || 0), 0);
+}
+
+/* ---------------------------------------------------------
+   CLOUD DATA LAYER — shared storage + offline queue
+   NOTE: This app cannot use browser localStorage (not
+   supported in this environment). "Offline" support here
+   means: entries typed while the connection drops are held
+   in memory and auto-synced the moment the connection comes
+   back, as long as this tab stays open. If the tab is fully
+   closed before syncing, unsynced entries would be lost —
+   so keep the app open until you see "Synced".
+--------------------------------------------------------- */
+function useCloud() {
+  const [online, setOnline] = useState(true);
+  const [pending, setPending] = useState([]); // [{key, value}]
+  const queueRef = useRef([]);
+
+  useEffect(() => {
+    const test = async () => {
+      try {
+        await window.storage.get("__ping__", true);
+        setOnline(true);
+      } catch (e) {
+        // get throws even for missing key (that's fine, means we reached network)
+        setOnline(true);
+      }
+    };
+    test();
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  const flush = useCallback(async () => {
+    if (queueRef.current.length === 0) return;
+    const items = [...queueRef.current];
+    for (const item of items) {
+      try {
+        await window.storage.set(item.key, JSON.stringify(item.value), true);
+        queueRef.current = queueRef.current.filter((q) => q.id !== item.id);
+        setPending([...queueRef.current]);
+        setOnline(true);
+      } catch (e) {
+        setOnline(false);
+        break;
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const t = setInterval(flush, 4000);
+    return () => clearInterval(t);
+  }, [flush]);
+
+  const save = useCallback(
+    async (key, value) => {
+      // optimistic — try immediately, queue on failure
+      try {
+        await window.storage.set(key, JSON.stringify(value), true);
+        setOnline(true);
+        return true;
+      } catch (e) {
+        const id = uid("q");
+        queueRef.current = [...queueRef.current, { id, key, value }];
+        setPending([...queueRef.current]);
+        setOnline(false);
+        return false;
+      }
+    },
+    []
+  );
+
+  const load = useCallback(async (key, fallback) => {
+    try {
+      const res = await window.storage.get(key, true);
+      if (!res || res.value === undefined) return fallback;
+      return JSON.parse(res.value);
+    } catch (e) {
+      return fallback;
+    }
+  }, []);
+
+  return { save, load, online, pendingCount: pending.length, flush };
+}
+
+/* ---------------------------------------------------------
+   SMALL UI PRIMITIVES
+--------------------------------------------------------- */
+function Logo({ size = 40 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" style={{ flexShrink: 0 }}>
+      <circle cx="50" cy="50" r="48" fill={COLORS.maroonDeep} />
+      <path
+        d="M62 22c8-6 16-4 18 2-6-1-11 1-14 5 6 0 11 3 13 8-6-2-11-1-14 2 5 2 8 6 8 11-5-3-10-3-14-1 3 4 3 9 0 13-8 8-20 8-26-1-3 4-8 5-13 3 3-5 2-10-2-13-6-5-6-13 0-18 3-3 8-4 12-2-2-5 0-11 5-14 3-2 7-2 10 1-1-4 1-9 5-11 4-2 9-1 12 4z"
+        fill="#fff"
+        opacity="0.06"
+      />
+      <g transform="translate(20,18)">
+        <path d="M35 6c10-8 22-6 26 3-8-1-15 1-19 7 8-1 15 3 18 10-8-2-15 0-19 4 6 3 10 8 10 15-6-4-13-4-18-1 2 5 1 11-3 15-4 4-10 4-14 0-3 6-10 8-16 5 3-4 3-9 0-13-4-5-4-11 0-15-3-3-4-8-2-13 2-5 7-8 12-8-2-4-1-9 3-12 3-2 7-2 9 1-1-4 1-8 4-9z" fill={COLORS.red} />
+        <ellipse cx="30" cy="28" rx="4" ry="5" fill={COLORS.maroonDeep} />
+        <path d="M8 24l-8 3 8 4z" fill="#E8A23A" />
+      </g>
+    </svg>
+  );
+}
+
+function Watermark() {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        pointerEvents: "none",
+        overflow: "hidden",
+        zIndex: 0,
+      }}
+    >
+      <span
+        style={{
+          fontFamily: "'Georgia', serif",
+          fontWeight: 700,
+          fontSize: 64,
+          letterSpacing: 4,
+          color: COLORS.maroon,
+          opacity: 0.05,
+          transform: "rotate(-8deg)",
+          whiteSpace: "nowrap",
+        }}
+      >
+        SHAH BROTHERS
+      </span>
+    </div>
+  );
+}
+
+function Btn({ children, onClick, variant = "primary", style, disabled, type = "button" }) {
+  const base = {
+    fontFamily: "inherit",
+    fontSize: 14,
+    fontWeight: 600,
+    padding: "10px 18px",
+    borderRadius: 8,
+    border: "none",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+    transition: "transform 0.08s ease, box-shadow 0.15s ease",
+  };
+  const variants = {
+    primary: { background: COLORS.red, color: "#fff", boxShadow: "0 2px 0 " + COLORS.maroonDeep },
+    gold: { background: COLORS.gold, color: "#fff", boxShadow: "0 2px 0 #8a641f" },
+    ghost: { background: "transparent", color: COLORS.maroon, border: `1.5px solid ${COLORS.line}` },
+    danger: { background: "#fff", color: "#A63131", border: "1.5px solid #E8B4B4" },
+  };
+  return (
+    <button
+      type={type}
+      disabled={disabled}
+      onClick={onClick}
+      onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
+      onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
+      style={{ ...base, ...variants[variant], ...style }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label style={{ display: "block", marginBottom: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.inkSoft, marginBottom: 6, letterSpacing: 0.3, textTransform: "uppercase" }}>
+        {label}
+      </div>
+      {children}
+    </label>
+  );
+}
+
+const inputStyle = {
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 8,
+  border: `1.5px solid ${COLORS.line}`,
+  fontSize: 15,
+  fontFamily: "inherit",
+  background: "#fff",
+  color: COLORS.ink,
+  boxSizing: "border-box",
+};
+
+function Card({ children, style }) {
+  return (
+    <div
+      style={{
+        background: COLORS.card,
+        border: `1px solid ${COLORS.line}`,
+        borderRadius: 14,
+        padding: 20,
+        boxShadow: "0 1px 3px rgba(58,14,18,0.06)",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function StatusBar({ online, pendingCount }) {
+  if (online && pendingCount === 0) return null;
+  return (
+    <div
+      style={{
+        background: online ? "#EAF4EC" : "#FBEFE3",
+        color: online ? COLORS.ok : COLORS.warn,
+        fontSize: 12.5,
+        fontWeight: 600,
+        padding: "7px 14px",
+        textAlign: "center",
+      }}
+    >
+      {online
+        ? `Syncing ${pendingCount} saved ${pendingCount === 1 ? "entry" : "entries"}…`
+        : `Offline — entries are being kept on this device. They'll sync automatically once internet is back. Keep this tab open.`}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   LOGIN SCREEN
+--------------------------------------------------------- */
+function LoginScreen({ cloud, onLogin }) {
+  const [role, setRole] = useState(null);
+  const [pwd, setPwd] = useState("");
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setErr("");
+    setBusy(true);
+    try {
+      if (role === "owner") {
+        const meta = (await cloud.load("meta:owner", null)) || { password: "shah123" };
+        if (pwd === meta.password) {
+          onLogin({ role: "owner", name: "Owner" });
+        } else {
+          setErr("Password ghalat hai.");
+        }
+      } else if (role === "worker") {
+        const workers = (await cloud.load("meta:workers", [])) || [];
+        const w = workers.find((x) => x.code.toLowerCase() === code.trim().toLowerCase());
+        if (w) onLogin({ role: "worker", id: w.id, name: displayName(w) });
+        else setErr("Ye code kisi worker se match nahi hua.");
+      } else if (role === "dukandar") {
+        const dukandars = (await cloud.load("meta:dukandars", [])) || [];
+        const d = dukandars.find((x) => x.pin.toLowerCase() === code.trim().toLowerCase());
+        if (d) onLogin({ role: "dukandar", id: d.id, name: displayName(d) });
+        else setErr("Ye PIN kisi dukandar se match nahi hua.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: `radial-gradient(circle at 50% -10%, #4A1218 0%, ${COLORS.bg} 55%)`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+        fontFamily: "'Segoe UI', system-ui, sans-serif",
+      }}
+    >
+      <div style={{ width: "100%", maxWidth: 420 }}>
+        <div style={{ textAlign: "center", marginBottom: 26 }}>
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+            <Logo size={64} />
+          </div>
+          <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 26, color: "#fff", letterSpacing: 1 }}>
+            SHAH BROTHERS
+          </div>
+          <div style={{ fontSize: 13, color: COLORS.goldLight, letterSpacing: 3, textTransform: "uppercase", marginTop: 2 }}>
+            Chicken Wastage · Ledger
+          </div>
+        </div>
+
+        <Card>
+          {!role && (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.inkSoft, marginBottom: 12, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Login as
+              </div>
+              <div style={{ display: "grid", gap: 10 }}>
+                {[
+                  ["owner", "Owner", "Full business access"],
+                  ["worker", "Worker", "Daily quantity entry"],
+                  ["dukandar", "Dukandar", "Apna material dekhein"],
+                ].map(([key, title, sub]) => (
+                  <button
+                    key={key}
+                    onClick={() => { setRole(key); setErr(""); }}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "flex-start",
+                      textAlign: "left",
+                      padding: "14px 16px",
+                      borderRadius: 10,
+                      border: `1.5px solid ${COLORS.line}`,
+                      background: "#fff",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontWeight: 700, color: COLORS.maroon, fontSize: 15 }}>{title}</span>
+                    <span style={{ fontSize: 12.5, color: COLORS.inkSoft }}>{sub}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {role === "owner" && (
+            <>
+              <Field label="Owner Password">
+                <input
+                  type="password"
+                  style={inputStyle}
+                  value={pwd}
+                  onChange={(e) => setPwd(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                  autoFocus
+                />
+              </Field>
+              {err && <div style={{ color: "#A63131", fontSize: 13, marginBottom: 10 }}>{err}</div>}
+              <div style={{ display: "flex", gap: 10 }}>
+                <Btn variant="ghost" onClick={() => setRole(null)}>Back</Btn>
+                <Btn onClick={submit} disabled={busy} style={{ flex: 1 }}>{busy ? "…" : "Login"}</Btn>
+              </div>
+              <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 10 }}>Default password: shah123 (change it after login from Manage tab).</div>
+            </>
+          )}
+
+          {(role === "worker" || role === "dukandar") && (
+            <>
+              <Field label={role === "worker" ? "Worker Code" : "Dukandar PIN"}>
+                <input
+                  style={inputStyle}
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                  placeholder={role === "worker" ? "e.g. W1" : "e.g. D101"}
+                  autoFocus
+                />
+              </Field>
+              {err && <div style={{ color: "#A63131", fontSize: 13, marginBottom: 10 }}>{err}</div>}
+              <div style={{ display: "flex", gap: 10 }}>
+                <Btn variant="ghost" onClick={() => setRole(null)}>Back</Btn>
+                <Btn onClick={submit} disabled={busy} style={{ flex: 1 }}>{busy ? "…" : "Login"}</Btn>
+              </div>
+            </>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   TOP BAR (shared across dashboards)
+--------------------------------------------------------- */
+function TopBar({ session, onLogout, subtitle }) {
+  return (
+    <div
+      style={{
+        background: COLORS.maroonDeep,
+        color: "#fff",
+        padding: "14px 20px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <Logo size={34} />
+        <div>
+          <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 17, letterSpacing: 0.5 }}>Shah Brothers</div>
+          <div style={{ fontSize: 11.5, color: COLORS.goldLight }}>{subtitle}</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{session.name}</div>
+          <div style={{ fontSize: 10.5, color: COLORS.goldLight, textTransform: "uppercase", letterSpacing: 0.5 }}>{session.role}</div>
+        </div>
+        <Btn variant="ghost" onClick={onLogout} style={{ color: "#fff", borderColor: "rgba(255,255,255,0.35)" }}>
+          Logout
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+function Tabs({ tabs, active, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 6, padding: "10px 16px", overflowX: "auto", background: "#fff", borderBottom: `1px solid ${COLORS.line}` }}>
+      {tabs.map((t) => (
+        <button
+          key={t.key}
+          onClick={() => onChange(t.key)}
+          style={{
+            padding: "8px 14px",
+            borderRadius: 999,
+            border: "none",
+            fontSize: 13,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            cursor: "pointer",
+            background: active === t.key ? COLORS.red : "transparent",
+            color: active === t.key ? "#fff" : COLORS.inkSoft,
+          }}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MonthPicker({ value, onChange }) {
+  const months = pastMonths(18);
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, width: "auto", fontWeight: 600 }}>
+      {months.map((m) => (
+        <option key={m} value={m}>{monthLabel(m)}</option>
+      ))}
+    </select>
+  );
+}
+
+/* ---------------------------------------------------------
+   WORKER DASHBOARD
+--------------------------------------------------------- */
+function WorkerDashboard({ session, cloud }) {
+  const [dukandars, setDukandars] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [mk] = useState(monthKey());
+  const [entries, setEntries] = useState([]);
+  const [form, setForm] = useState({ date: todayISO(), dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  const [submission, setSubmission] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const all = (await cloud.load("meta:dukandars", [])) || [];
+      const mine = all.filter((d) => d.workerId === session.id && !d.archived);
+      setDukandars(mine);
+      if (mine.length) setSelected(mine[0].id);
+      const sub = await cloud.load(`submission:${session.id}:${mk}`, null);
+      setSubmission(sub);
+      setLoading(false);
+    })();
+  }, [cloud, session.id, mk]);
+
+  useEffect(() => {
+    if (!selected) return;
+    (async () => {
+      const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+      setEntries(e.sort((a, b) => (a.date < b.date ? 1 : -1)));
+    })();
+  }, [selected, mk, cloud]);
+
+  const addEntry = async () => {
+    const rec = {
+      date: form.date,
+      dum: Number(form.dum) || 0,
+      kachra: Number(form.kachra) || 0,
+      charbi: Number(form.charbi) || 0,
+      machli: Number(form.machli) || 0,
+      paya: Number(form.paya) || 0,
+      enteredBy: session.name,
+    };
+    const updated = [rec, ...entries.filter((e) => e.date !== rec.date)];
+    setEntries(updated);
+    await cloud.save(`entries:${selected}:${mk}`, updated);
+    setForm({ date: todayISO(), dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  };
+
+  const submitMonth = async () => {
+    const rec = { submitted: true, submittedAt: new Date().toISOString() };
+    setSubmission(rec);
+    await cloud.save(`submission:${session.id}:${mk}`, rec);
+  };
+
+  const selDukandar = dukandars.find((d) => d.id === selected);
+  const monthTotal = useMemo(() => {
+    const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+    entries.forEach((e) => ITEM_KEYS.forEach((k) => (t[k] += Number(e[k]) || 0)));
+    return t;
+  }, [entries]);
+
+  if (loading) return <div style={{ padding: 30, color: COLORS.inkSoft }}>Load ho raha hai…</div>;
+
+  return (
+    <div style={{ padding: 16, maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 700, color: COLORS.maroon, fontSize: 17 }}>{monthLabel(mk)}</div>
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>{dukandars.length} dukandar assigned</div>
+        </div>
+        {submission?.submitted ? (
+          <span style={{ background: "#EAF4EC", color: COLORS.ok, fontSize: 12.5, fontWeight: 700, padding: "6px 12px", borderRadius: 999 }}>
+            ✓ Submitted to Owner
+          </span>
+        ) : (
+          <Btn variant="gold" onClick={submitMonth}>Submit Month to Owner</Btn>
+        )}
+      </div>
+
+      {dukandars.length === 0 ? (
+        <Card><div style={{ color: COLORS.inkSoft }}>Abhi koi dukandar assign nahi hua. Owner se assign karwayein.</div></Card>
+      ) : (
+        <>
+          {dukandars.length > 6 && (
+            <input
+              style={{ ...inputStyle, marginBottom: 10 }}
+              placeholder="Naam se search karein…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          )}
+          <div style={{ display: "flex", gap: 8, overflowX: "auto", marginBottom: 14, paddingBottom: 4 }}>
+            {dukandars
+              .filter((d) => {
+                const q = search.trim().toLowerCase();
+                if (!q) return true;
+                return d.name.toLowerCase().includes(q) || (d.nameUrdu || "").includes(search.trim());
+              })
+              .map((d) => (
+              <button
+                key={d.id}
+                onClick={() => setSelected(d.id)}
+                style={{
+                  padding: "9px 14px",
+                  borderRadius: 10,
+                  border: `1.5px solid ${selected === d.id ? COLORS.red : COLORS.line}`,
+                  background: selected === d.id ? "#FBEAEA" : "#fff",
+                  color: COLORS.maroon,
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                  whiteSpace: "nowrap",
+                  cursor: "pointer",
+                }}
+              >
+                {displayName(d)}
+              </button>
+            ))}
+          </div>
+
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>{displayName(selDukandar)} — Aaj ki Entry</div>
+            <Field label="Date">
+              <input type="date" style={inputStyle} value={form.date} max={todayISO()} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 10 }}>
+              {ITEM_KEYS.map((k, i) => (
+                <Field key={k} label={ITEMS[i] + " (kg)"}>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    style={inputStyle}
+                    value={form[k]}
+                    onChange={(e) => setForm({ ...form, [k]: e.target.value })}
+                    placeholder="0"
+                  />
+                </Field>
+              ))}
+            </div>
+            <Btn onClick={addEntry} style={{ width: "100%", marginTop: 4 }}>Save Entry</Btn>
+          </Card>
+
+          <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>Is Month ka Total</div>
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 8 }}>
+              {ITEM_KEYS.map((k, i) => (
+                <div key={k} style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: COLORS.inkSoft, textTransform: "uppercase" }}>{ITEMS[i]}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.red }}>{monthTotal[k]}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>History (is month)</div>
+          <Card>
+            {entries.length === 0 ? (
+              <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>Koi entry nahi hui abhi.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                      <th style={{ padding: 6 }}>Date</th>
+                      {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((e, idx) => (
+                      <tr key={idx} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                        <td style={{ padding: 6 }}>{fmtDate(e.date)}</td>
+                        {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 6 }}>{e[k]}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   DUKANDAR DASHBOARD
+--------------------------------------------------------- */
+function DukandarDashboard({ session, cloud }) {
+  const [mk, setMk] = useState(monthKey());
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const e = (await cloud.load(`entries:${session.id}:${mk}`, [])) || [];
+      setEntries(e.sort((a, b) => (a.date < b.date ? 1 : -1)));
+      setLoading(false);
+    })();
+  }, [session.id, mk, cloud]);
+
+  const total = useMemo(() => {
+    const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+    entries.forEach((e) => ITEM_KEYS.forEach((k) => (t[k] += Number(e[k]) || 0)));
+    return t;
+  }, [entries]);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 680, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>{session.name}</div>
+        <MonthPicker value={mk} onChange={setMk} />
+      </div>
+
+      <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>{monthLabel(mk)} — Total</div>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 8 }}>
+          {ITEM_KEYS.map((k, i) => (
+            <div key={k} style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: COLORS.inkSoft, textTransform: "uppercase" }}>{ITEMS[i]}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.red }}>{total[k]} kg</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>Daily Record</div>
+      <Card>
+        {loading ? (
+          <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div>
+        ) : entries.length === 0 ? (
+          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>Is month koi record nahi mila.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                  <th style={{ padding: 6 }}>Date</th>
+                  {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((e, idx) => (
+                  <tr key={idx} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: 6 }}>{fmtDate(e.date)}</td>
+                    {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 6 }}>{e[k]}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 10, textAlign: "center" }}>
+        Sirf quantity dikhai jati hai — rate/amount ka access sirf owner ke paas hai.
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — LIVE FEED
+--------------------------------------------------------- */
+function OwnerLive({ cloud }) {
+  const [mk] = useState(monthKey());
+  const [dukandars, setDukandars] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const ds = (await cloud.load("meta:dukandars", [])) || [];
+    setDukandars(ds);
+    const all = [];
+    for (const d of ds.filter((x) => !x.archived)) {
+      const e = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+      e.forEach((rec) => all.push({ ...rec, dukandarName: displayName(d) }));
+    }
+    all.sort((a, b) => (a.date < b.date ? 1 : -1));
+    setRows(all.slice(0, 60));
+    setLoading(false);
+  }, [cloud, mk]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>Live Feed — {monthLabel(mk)}</div>
+        <Btn variant="ghost" onClick={refresh}>Refresh</Btn>
+      </div>
+      <Card>
+        {loading ? (
+          <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>Is month abhi tak koi entry nahi hui.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                  <th style={{ padding: 6 }}>Date</th>
+                  <th style={{ padding: 6 }}>Dukandar</th>
+                  {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((e, idx) => (
+                  <tr key={idx} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: 6 }}>{fmtDate(e.date)}</td>
+                    <td style={{ padding: 6, fontWeight: 600 }}>{e.dukandarName}</td>
+                    {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 6 }}>{e[k]}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — CONSOLIDATED TOTALS (Page 2)
+--------------------------------------------------------- */
+function OwnerTotals({ cloud }) {
+  const [mk, setMk] = useState(monthKey());
+  const [dukandars, setDukandars] = useState([]);
+  const [totals, setTotals] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      setDukandars(ds);
+      const out = [];
+      for (const d of ds.filter((x) => !x.archived)) {
+        const e = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+        const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+        e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
+        out.push({ id: d.id, name: displayName(d), ...t, days: e.length });
+      }
+      setTotals(out);
+      setLoading(false);
+    })();
+  }, [cloud, mk]);
+
+  const grand = useMemo(() => {
+    const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+    totals.forEach((r) => ITEM_KEYS.forEach((k) => (t[k] += r[k])));
+    return t;
+  }, [totals]);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 950, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>Consolidated Monthly Total</div>
+        <MonthPicker value={mk} onChange={setMk} />
+      </div>
+      <Card>
+        {loading ? (
+          <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
+                  <th style={{ padding: 8 }}>Dukandar</th>
+                  {ITEMS.map((i) => <th key={i} style={{ padding: 8 }}>{i} (kg)</th>)}
+                  <th style={{ padding: 8 }}>Din</th>
+                </tr>
+              </thead>
+              <tbody>
+                {totals.map((r) => (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{r.name}</td>
+                    {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 8 }}>{r[k]}</td>)}
+                    <td style={{ padding: 8 }}>{r.days}</td>
+                  </tr>
+                ))}
+                {totals.length === 0 && (
+                  <tr><td colSpan={7} style={{ padding: 12, color: COLORS.inkSoft }}>Koi data nahi mila.</td></tr>
+                )}
+              </tbody>
+              {totals.length > 0 && (
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${COLORS.gold}`, fontWeight: 700 }}>
+                    <td style={{ padding: 8, color: COLORS.gold }}>GRAND TOTAL</td>
+                    {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 8, color: COLORS.gold }}>{grand[k]}</td>)}
+                    <td />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — FACTORY SALES (Page 3)
+--------------------------------------------------------- */
+function OwnerFactory({ cloud }) {
+  const [mk, setMk] = useState(monthKey());
+  const [rows, setRows] = useState([]);
+  const [form, setForm] = useState({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "", rate: "" });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const r = (await cloud.load(`factory:${mk}`, [])) || [];
+      setRows(r.sort((a, b) => (a.date < b.date ? 1 : -1)));
+      setLoading(false);
+    })();
+  }, [mk, cloud]);
+
+  const addRow = async () => {
+    if (!form.factoryName || !form.qty || !form.rate) return;
+    const rec = {
+      id: uid("F"),
+      date: form.date,
+      factoryName: form.factoryName,
+      item: form.item,
+      qty: Number(form.qty),
+      rate: Number(form.rate),
+      amount: Number(form.qty) * Number(form.rate),
+    };
+    const updated = [rec, ...rows];
+    setRows(updated);
+    await cloud.save(`factory:${mk}`, updated);
+    setForm({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "", rate: "" });
+  };
+
+  const removeRow = async (id) => {
+    const updated = rows.filter((r) => r.id !== id);
+    setRows(updated);
+    await cloud.save(`factory:${mk}`, updated);
+  };
+
+  const total = sum(rows, (r) => r.amount);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>Factory Sales</div>
+        <MonthPicker value={mk} onChange={setMk} />
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Record</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
+          <Field label="Date"><input type="date" style={inputStyle} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+          <Field label="Factory Name"><input style={inputStyle} value={form.factoryName} onChange={(e) => setForm({ ...form, factoryName: e.target.value })} placeholder="e.g. Al-Madina Factory" /></Field>
+          <Field label="Item">
+            <select style={inputStyle} value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })}>
+              {ITEMS.map((i) => <option key={i} value={i}>{i}</option>)}
+            </select>
+          </Field>
+          <Field label="Qty (kg)"><input type="number" style={inputStyle} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></Field>
+          <Field label="Rate (per kg)"><input type="number" style={inputStyle} value={form.rate} onChange={(e) => setForm({ ...form, rate: e.target.value })} /></Field>
+        </div>
+        <Btn onClick={addRow} style={{ marginTop: 6 }}>Add</Btn>
+      </Card>
+
+      <Card>
+        {loading ? (
+          <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                  <th style={{ padding: 6 }}>Date</th><th style={{ padding: 6 }}>Factory</th><th style={{ padding: 6 }}>Item</th>
+                  <th style={{ padding: 6 }}>Qty</th><th style={{ padding: 6 }}>Rate</th><th style={{ padding: 6 }}>Amount</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: 6 }}>{fmtDate(r.date)}</td>
+                    <td style={{ padding: 6, fontWeight: 600 }}>{r.factoryName}</td>
+                    <td style={{ padding: 6 }}>{r.item}</td>
+                    <td style={{ padding: 6 }}>{r.qty}</td>
+                    <td style={{ padding: 6 }}>{money(r.rate)}</td>
+                    <td style={{ padding: 6, fontWeight: 700, color: COLORS.red }}>{money(r.amount)}</td>
+                    <td style={{ padding: 6 }}><button onClick={() => removeRow(r.id)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 12 }}>Remove</button></td>
+                  </tr>
+                ))}
+                {rows.length === 0 && <tr><td colSpan={7} style={{ padding: 12, color: COLORS.inkSoft }}>Koi record nahi.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {rows.length > 0 && (
+          <div style={{ marginTop: 10, textAlign: "right", fontWeight: 700, color: COLORS.gold, fontSize: 15 }}>
+            Total: {money(total)}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — RATE & PAYMENT / BILL (Page 4)
+--------------------------------------------------------- */
+function OwnerRates({ cloud }) {
+  const [mk, setMk] = useState(monthKey());
+  const [dukandars, setDukandars] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [entries, setEntries] = useState([]);
+  const [rates, setRates] = useState({ dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  const [advance, setAdvance] = useState([]);
+  const [advForm, setAdvForm] = useState({ date: todayISO(), amount: "", note: "" });
+  const [prevBL, setPrevBL] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      setDukandars(ds.filter((d) => !d.archived));
+      if (ds.length && !selected) setSelected(ds[0].id);
+    })();
+    // eslint-disable-next-line
+  }, [cloud]);
+
+  useEffect(() => {
+    if (!selected) return;
+    (async () => {
+      setLoading(true);
+      const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+      setEntries(e);
+      const r = await cloud.load(`rates:${selected}:${mk}`, null);
+      setRates(r || { dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+      const adv = (await cloud.load(`advance:${selected}`, [])) || [];
+      setAdvance(adv);
+      const bl = await cloud.load(`prevbl:${selected}:${mk}`, "");
+      setPrevBL(bl || "");
+      setLoading(false);
+    })();
+  }, [selected, mk, cloud]);
+
+  const totals = useMemo(() => {
+    const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+    entries.forEach((e) => ITEM_KEYS.forEach((k) => (t[k] += Number(e[k]) || 0)));
+    return t;
+  }, [entries]);
+
+  const lineAmounts = ITEM_KEYS.map((k, i) => ({
+    item: ITEMS[i],
+    qty: totals[k],
+    rate: Number(rates[k]) || 0,
+    amount: totals[k] * (Number(rates[k]) || 0),
+  }));
+  const billTotal = sum(lineAmounts, (l) => l.amount);
+  const totalAdvance = sum(advance, (a) => a.amount);
+  const grandDue = billTotal + (Number(prevBL) || 0);
+
+  const saveRates = async () => {
+    await cloud.save(`rates:${selected}:${mk}`, rates);
+    await cloud.save(`prevbl:${selected}:${mk}`, prevBL);
+  };
+
+  const addAdvance = async () => {
+    if (!advForm.amount) return;
+    const rec = { id: uid("A"), date: advForm.date, amount: Number(advForm.amount), note: advForm.note };
+    const updated = [rec, ...advance];
+    setAdvance(updated);
+    await cloud.save(`advance:${selected}`, updated);
+    setAdvForm({ date: todayISO(), amount: "", note: "" });
+  };
+
+  const dukandar = dukandars.find((d) => d.id === selected);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 950, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>Rate, Bill &amp; Payment</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select style={{ ...inputStyle, width: "auto" }} value={selected || ""} onChange={(e) => setSelected(e.target.value)}>
+            {dukandars.map((d) => <option key={d.id} value={d.id}>{displayName(d)}</option>)}
+          </select>
+          <MonthPicker value={mk} onChange={setMk} />
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div>
+      ) : (
+        <>
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Set Rate per kg — {displayName(dukandar)}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 10 }}>
+              {ITEM_KEYS.map((k, i) => (
+                <Field key={k} label={ITEMS[i]}>
+                  <input type="number" style={inputStyle} value={rates[k]} onChange={(e) => setRates({ ...rates, [k]: e.target.value })} placeholder="0" />
+                </Field>
+              ))}
+            </div>
+            <Field label="Previous B/L (Rs)">
+              <input type="number" style={inputStyle} value={prevBL} onChange={(e) => setPrevBL(e.target.value)} placeholder="0" />
+            </Field>
+            <Btn onClick={saveRates}>Save Rates &amp; Bill</Btn>
+          </Card>
+
+          {/* BILL PREVIEW */}
+          <Card style={{ marginBottom: 16, position: "relative", overflow: "hidden" }}>
+            <Watermark />
+            <div style={{ position: "relative", zIndex: 1 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: `2px solid ${COLORS.maroon}`, paddingBottom: 10, marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 19, color: COLORS.maroon }}>SHAH BROTHERS CHICKEN WASTAGE</div>
+                  <div style={{ fontSize: 12, color: COLORS.inkSoft }}>House No A/104 Fish Market Moosa Colony</div>
+                  <div style={{ fontSize: 12, color: COLORS.inkSoft }}>shahbrothers1311@gmail.com · 0313-1004863</div>
+                </div>
+                <Logo size={46} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{displayName(dukandar)}</div>
+                <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>{monthLabel(mk)}</div>
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${COLORS.line}`, textAlign: "left" }}>
+                    <th style={{ padding: 6 }}>Particular</th><th style={{ padding: 6 }}>Qty (kg)</th><th style={{ padding: 6 }}>Rate</th><th style={{ padding: 6 }}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineAmounts.map((l) => (
+                    <tr key={l.item} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                      <td style={{ padding: 6 }}>{l.item}</td>
+                      <td style={{ padding: 6 }}>{l.qty}</td>
+                      <td style={{ padding: 6 }}>{money(l.rate)}</td>
+                      <td style={{ padding: 6 }}>{money(l.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr><td colSpan={3} style={{ padding: 6, fontWeight: 700 }}>TOTAL</td><td style={{ padding: 6, fontWeight: 700 }}>{money(billTotal)}</td></tr>
+                  <tr><td colSpan={3} style={{ padding: 6 }}>Previous B/L</td><td style={{ padding: 6 }}>{money(prevBL)}</td></tr>
+                  <tr><td colSpan={3} style={{ padding: 6 }}>Advance B/L (record only)</td><td style={{ padding: 6 }}>{money(totalAdvance)}</td></tr>
+                  <tr style={{ borderTop: `2px solid ${COLORS.gold}` }}>
+                    <td colSpan={3} style={{ padding: 6, fontWeight: 700, color: COLORS.gold }}>GRAND TOTAL (Bill + Prev B/L)</td>
+                    <td style={{ padding: 6, fontWeight: 700, color: COLORS.gold }}>{money(grandDue)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Advance Record (track-only — bill se auto-minus nahi hota)</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10, marginBottom: 8 }}>
+              <Field label="Date"><input type="date" style={inputStyle} value={advForm.date} onChange={(e) => setAdvForm({ ...advForm, date: e.target.value })} /></Field>
+              <Field label="Amount"><input type="number" style={inputStyle} value={advForm.amount} onChange={(e) => setAdvForm({ ...advForm, amount: e.target.value })} /></Field>
+              <Field label="Note"><input style={inputStyle} value={advForm.note} onChange={(e) => setAdvForm({ ...advForm, note: e.target.value })} placeholder="optional" /></Field>
+            </div>
+            <Btn variant="gold" onClick={addAdvance}>Add Advance</Btn>
+            <div style={{ marginTop: 12 }}>
+              {advance.length === 0 ? (
+                <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>Koi advance record nahi.</div>
+              ) : (
+                advance.map((a) => (
+                  <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${COLORS.line}`, fontSize: 13.5 }}>
+                    <span>{fmtDate(a.date)} {a.note && `· ${a.note}`}</span>
+                    <span style={{ fontWeight: 700 }}>{money(a.amount)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — SALARY & EXPENSES (Page 5)
+--------------------------------------------------------- */
+function OwnerSalary({ cloud }) {
+  const [mk, setMk] = useState(monthKey());
+  const [workers, setWorkers] = useState([]);
+  const [salaries, setSalaries] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [salForm, setSalForm] = useState({ workerId: "", amount: "", note: "" });
+  const [expForm, setExpForm] = useState({ date: todayISO(), desc: "", amount: "" });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const w = (await cloud.load("meta:workers", [])) || [];
+      setWorkers(w);
+      const s = (await cloud.load(`salary:${mk}`, [])) || [];
+      setSalaries(s);
+      const e = (await cloud.load(`expense:${mk}`, [])) || [];
+      setExpenses(e);
+      if (w.length) setSalForm((f) => ({ ...f, workerId: w[0].id }));
+      setLoading(false);
+    })();
+  }, [mk, cloud]);
+
+  const addSalary = async () => {
+    if (!salForm.workerId || !salForm.amount) return;
+    const w = workers.find((x) => x.id === salForm.workerId);
+    const rec = { id: uid("S"), workerId: w.id, workerName: w.name, amount: Number(salForm.amount), note: salForm.note };
+    const updated = [rec, ...salaries];
+    setSalaries(updated);
+    await cloud.save(`salary:${mk}`, updated);
+    setSalForm({ ...salForm, amount: "", note: "" });
+  };
+
+  const addExpense = async () => {
+    if (!expForm.desc || !expForm.amount) return;
+    const rec = { id: uid("E"), date: expForm.date, desc: expForm.desc, amount: Number(expForm.amount) };
+    const updated = [rec, ...expenses];
+    setExpenses(updated);
+    await cloud.save(`expense:${mk}`, updated);
+    setExpForm({ date: todayISO(), desc: "", amount: "" });
+  };
+
+  const totalSalary = sum(salaries, (s) => s.amount);
+  const totalExpense = sum(expenses, (e) => e.amount);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>Salary &amp; Expenses</div>
+        <MonthPicker value={mk} onChange={setMk} />
+      </div>
+
+      {loading ? <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div> : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div>
+            <Card style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Worker Salary</div>
+              <Field label="Worker">
+                <select style={inputStyle} value={salForm.workerId} onChange={(e) => setSalForm({ ...salForm, workerId: e.target.value })}>
+                  {workers.map((w) => <option key={w.id} value={w.id}>{displayName(w)}</option>)}
+                </select>
+              </Field>
+              <Field label="Amount"><input type="number" style={inputStyle} value={salForm.amount} onChange={(e) => setSalForm({ ...salForm, amount: e.target.value })} /></Field>
+              <Field label="Note"><input style={inputStyle} value={salForm.note} onChange={(e) => setSalForm({ ...salForm, note: e.target.value })} placeholder="optional" /></Field>
+              <Btn onClick={addSalary} style={{ width: "100%" }}>Add</Btn>
+            </Card>
+            <Card>
+              {salaries.map((s) => (
+                <div key={s.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${COLORS.line}`, fontSize: 13.5 }}>
+                  <span>{s.workerName} {s.note && `· ${s.note}`}</span>
+                  <span style={{ fontWeight: 700 }}>{money(s.amount)}</span>
+                </div>
+              ))}
+              {salaries.length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>Koi salary record nahi.</div>}
+              {salaries.length > 0 && <div style={{ marginTop: 8, textAlign: "right", fontWeight: 700, color: COLORS.red }}>Total: {money(totalSalary)}</div>}
+            </Card>
+          </div>
+
+          <div>
+            <Card style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Other Expense</div>
+              <Field label="Date"><input type="date" style={inputStyle} value={expForm.date} onChange={(e) => setExpForm({ ...expForm, date: e.target.value })} /></Field>
+              <Field label="Description"><input style={inputStyle} value={expForm.desc} onChange={(e) => setExpForm({ ...expForm, desc: e.target.value })} placeholder="e.g. Petrol" /></Field>
+              <Field label="Amount"><input type="number" style={inputStyle} value={expForm.amount} onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })} /></Field>
+              <Btn onClick={addExpense} style={{ width: "100%" }}>Add</Btn>
+            </Card>
+            <Card>
+              {expenses.map((e) => (
+                <div key={e.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${COLORS.line}`, fontSize: 13.5 }}>
+                  <span>{fmtDate(e.date)} · {e.desc}</span>
+                  <span style={{ fontWeight: 700 }}>{money(e.amount)}</span>
+                </div>
+              ))}
+              {expenses.length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>Koi expense record nahi.</div>}
+              {expenses.length > 0 && <div style={{ marginTop: 8, textAlign: "right", fontWeight: 700, color: COLORS.red }}>Total: {money(totalExpense)}</div>}
+            </Card>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — PAST DATA (manually add historical months)
+--------------------------------------------------------- */
+function yearMonthOptions(yearsBack = 6) {
+  const now = new Date();
+  const years = [];
+  for (let y = now.getFullYear(); y >= now.getFullYear() - yearsBack; y--) years.push(y);
+  const months = [
+    "January","February","March","April","May","June",
+    "July","August","September","October","November","December",
+  ];
+  return { years, months };
+}
+
+function OwnerPastData({ cloud }) {
+  const { years, months } = yearMonthOptions();
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [monthIdx, setMonthIdx] = useState(now.getMonth());
+  const [dukandars, setDukandars] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [vals, setVals] = useState({ dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  const [existing, setExisting] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  const mk = `${year}-${String(monthIdx + 1).padStart(2, "0")}`;
+
+  useEffect(() => {
+    (async () => {
+      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      setDukandars(ds);
+      if (ds.length && !selected) setSelected(ds[0].id);
+    })();
+    // eslint-disable-next-line
+  }, [cloud]);
+
+  useEffect(() => {
+    if (!selected) return;
+    (async () => {
+      const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+      const hist = e.find((r) => r.historical);
+      setExisting(hist || null);
+      setVals(
+        hist
+          ? { dum: hist.dum, kachra: hist.kachra, charbi: hist.charbi, machli: hist.machli, paya: hist.paya }
+          : { dum: "", kachra: "", charbi: "", machli: "", paya: "" }
+      );
+    })();
+  }, [selected, mk, cloud]);
+
+  const save = async () => {
+    setMsg("");
+    const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+    const rec = {
+      date: `${mk}-01`,
+      dum: Number(vals.dum) || 0,
+      kachra: Number(vals.kachra) || 0,
+      charbi: Number(vals.charbi) || 0,
+      machli: Number(vals.machli) || 0,
+      paya: Number(vals.paya) || 0,
+      historical: true,
+      enteredBy: "Owner (manual)",
+    };
+    const updated = [rec, ...e.filter((r) => !r.historical)];
+    await cloud.save(`entries:${selected}:${mk}`, updated);
+    setExisting(rec);
+    setMsg("Saved — is month ke consolidated total aur bill mein ye data shamil ho gaya hai.");
+  };
+
+  const dukandar = dukandars.find((d) => d.id === selected);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 700, margin: "0 auto" }}>
+      <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon, marginBottom: 6 }}>Purana Data Add Karein</div>
+      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 16 }}>
+        Purane register ka poora month ka total ek dafa mein daal dein — roz-roz likhne ki zaroorat nahi. Ye Monthly Totals aur Rate/Bill mein khud shamil ho jayega.
+      </div>
+
+      <Card>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 4 }}>
+          <Field label="Dukandar">
+            <select style={inputStyle} value={selected || ""} onChange={(e) => setSelected(e.target.value)}>
+              {dukandars.map((d) => <option key={d.id} value={d.id}>{displayName(d)}</option>)}
+            </select>
+          </Field>
+          <Field label="Month">
+            <select style={inputStyle} value={monthIdx} onChange={(e) => setMonthIdx(Number(e.target.value))}>
+              {months.map((m, i) => <option key={m} value={i}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="Year">
+            <select style={inputStyle} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+              {years.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </Field>
+        </div>
+
+        {existing && (
+          <div style={{ fontSize: 12.5, color: COLORS.warn, marginBottom: 10 }}>
+            Is dukandar/month ke liye pehle se purana data maujood hai — save karne par overwrite ho jayega.
+          </div>
+        )}
+
+        <div style={{ fontWeight: 700, marginBottom: 8, color: COLORS.maroon }}>{displayName(dukandar)} — {months[monthIdx]} {year} Total (kg)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 10 }}>
+          {ITEM_KEYS.map((k, i) => (
+            <Field key={k} label={ITEMS[i]}>
+              <input type="number" style={inputStyle} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })} placeholder="0" />
+            </Field>
+          ))}
+        </div>
+        <Btn onClick={save} style={{ marginTop: 6 }}>Save Purana Data</Btn>
+        {msg && <div style={{ marginTop: 10, fontSize: 13, color: COLORS.ok }}>{msg}</div>}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — MANAGE (workers, dukandars, assignment, password)
+--------------------------------------------------------- */
+function OwnerManage({ cloud }) {
+  const [workers, setWorkers] = useState([]);
+  const [dukandars, setDukandars] = useState([]);
+  const [wForm, setWForm] = useState({ name: "", nameUrdu: "", code: "" });
+  const [dForm, setDForm] = useState({ name: "", nameUrdu: "", phone: "", address: "", pin: "", workerId: "" });
+  const [pwdForm, setPwdForm] = useState({ current: "", next: "" });
+  const [pwdMsg, setPwdMsg] = useState("");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setWorkers((await cloud.load("meta:workers", [])) || []);
+    setDukandars((await cloud.load("meta:dukandars", [])) || []);
+    setLoading(false);
+  }, [cloud]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const addWorker = async () => {
+    if (!wForm.name || !wForm.code) return;
+    const rec = { id: uid("W"), name: wForm.name, nameUrdu: wForm.nameUrdu, code: wForm.code.toUpperCase(), photo: "" };
+    const updated = [...workers, rec];
+    setWorkers(updated);
+    await cloud.save("meta:workers", updated);
+    setWForm({ name: "", nameUrdu: "", code: "" });
+  };
+
+  const addDukandar = async () => {
+    if (!dForm.name || !dForm.pin) return;
+    const rec = { id: uid("D"), name: dForm.name, nameUrdu: dForm.nameUrdu, phone: dForm.phone, address: dForm.address, pin: dForm.pin.toUpperCase(), workerId: dForm.workerId || null, archived: false, photo: "" };
+    const updated = [...dukandars, rec];
+    setDukandars(updated);
+    await cloud.save("meta:dukandars", updated);
+    setDForm({ name: "", nameUrdu: "", phone: "", address: "", pin: "", workerId: "" });
+  };
+
+  const reassign = async (dukandarId, workerId) => {
+    const updated = dukandars.map((d) => (d.id === dukandarId ? { ...d, workerId: workerId || null } : d));
+    setDukandars(updated);
+    await cloud.save("meta:dukandars", updated);
+  };
+
+  const toggleArchive = async (dukandarId) => {
+    const updated = dukandars.map((d) => (d.id === dukandarId ? { ...d, archived: !d.archived } : d));
+    setDukandars(updated);
+    await cloud.save("meta:dukandars", updated);
+  };
+
+  const changePwd = async () => {
+    setPwdMsg("");
+    const meta = (await cloud.load("meta:owner", null)) || { password: "shah123" };
+    if (pwdForm.current !== meta.password) {
+      setPwdMsg("Current password ghalat hai.");
+      return;
+    }
+    if (!pwdForm.next || pwdForm.next.length < 4) {
+      setPwdMsg("Naya password kam az kam 4 characters ka ho.");
+      return;
+    }
+    await cloud.save("meta:owner", { password: pwdForm.next });
+    setPwdMsg("Password update ho gaya.");
+    setPwdForm({ current: "", next: "" });
+  };
+
+  if (loading) return <div style={{ padding: 30, color: COLORS.inkSoft }}>Load ho raha hai…</div>;
+
+  return (
+    <div style={{ padding: 16, maxWidth: 950, margin: "0 auto", display: "grid", gap: 16 }}>
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Worker</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
+          <Field label="Name (English)"><input style={inputStyle} value={wForm.name} onChange={(e) => setWForm({ ...wForm, name: e.target.value })} /></Field>
+          <Field label="Naam (Urdu) — optional"><input style={{ ...inputStyle, direction: "rtl", fontFamily: "'Noto Nastaliq Urdu', serif" }} value={wForm.nameUrdu} onChange={(e) => setWForm({ ...wForm, nameUrdu: e.target.value })} placeholder="مثلاً بلال" /></Field>
+          <Field label="Unique Code"><input style={inputStyle} value={wForm.code} onChange={(e) => setWForm({ ...wForm, code: e.target.value })} placeholder="e.g. W1" /></Field>
+        </div>
+        <Btn onClick={addWorker}>Add Worker</Btn>
+        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {workers.map((w) => (
+            <span key={w.id} style={{ background: "#F6EEDD", padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, color: COLORS.maroon }}>
+              {displayName(w)} <span style={{ color: COLORS.inkSoft }}>({w.code})</span>
+            </span>
+          ))}
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Dukandar</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
+          <Field label="Name (English)"><input style={inputStyle} value={dForm.name} onChange={(e) => setDForm({ ...dForm, name: e.target.value })} /></Field>
+          <Field label="Naam (Urdu) — optional"><input style={{ ...inputStyle, direction: "rtl", fontFamily: "'Noto Nastaliq Urdu', serif" }} value={dForm.nameUrdu} onChange={(e) => setDForm({ ...dForm, nameUrdu: e.target.value })} placeholder="مثلاً احمد اسٹور" /></Field>
+          <Field label="Phone"><input style={inputStyle} value={dForm.phone} onChange={(e) => setDForm({ ...dForm, phone: e.target.value })} /></Field>
+          <Field label="Address"><input style={inputStyle} value={dForm.address} onChange={(e) => setDForm({ ...dForm, address: e.target.value })} /></Field>
+          <Field label="Unique PIN"><input style={inputStyle} value={dForm.pin} onChange={(e) => setDForm({ ...dForm, pin: e.target.value })} placeholder="e.g. D101" /></Field>
+          <Field label="Assign Worker">
+            <select style={inputStyle} value={dForm.workerId} onChange={(e) => setDForm({ ...dForm, workerId: e.target.value })}>
+              <option value="">— none —</option>
+              {workers.map((w) => <option key={w.id} value={w.id}>{displayName(w)}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Btn onClick={addDukandar}>Add Dukandar</Btn>
+      </Card>
+
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, color: COLORS.maroon }}>All Dukandars — Assignment</div>
+          <input
+            style={{ ...inputStyle, width: 220 }}
+            placeholder="Naam ya PIN se search karein…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                <th style={{ padding: 6 }}>Name</th><th style={{ padding: 6 }}>PIN</th><th style={{ padding: 6 }}>Worker</th><th style={{ padding: 6 }}>Status</th><th />
+              </tr>
+            </thead>
+            <tbody>
+              {dukandars
+                .filter((d) => {
+                  const q = search.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    d.name.toLowerCase().includes(q) ||
+                    (d.nameUrdu || "").includes(search.trim()) ||
+                    d.pin.toLowerCase().includes(q)
+                  );
+                })
+                .map((d) => (
+                <tr key={d.id} style={{ borderTop: `1px solid ${COLORS.line}`, opacity: d.archived ? 0.5 : 1 }}>
+                  <td style={{ padding: 6, fontWeight: 600 }}>{displayName(d)}</td>
+                  <td style={{ padding: 6 }}>{d.pin}</td>
+                  <td style={{ padding: 6 }}>
+                    <select style={{ ...inputStyle, padding: "4px 8px" }} value={d.workerId || ""} onChange={(e) => reassign(d.id, e.target.value)}>
+                      <option value="">— none —</option>
+                      {workers.map((w) => <option key={w.id} value={w.id}>{displayName(w)}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: 6 }}>{d.archived ? "Archived" : "Active"}</td>
+                  <td style={{ padding: 6 }}>
+                    <button onClick={() => toggleArchive(d.id)} style={{ border: "none", background: "none", color: d.archived ? COLORS.ok : "#A63131", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                      {d.archived ? "Restore" : "Archive"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {dukandars.length === 0 && <tr><td colSpan={5} style={{ padding: 10, color: COLORS.inkSoft }}>Koi dukandar nahi.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 8 }}>Archive karne se dukandar ki active list se hat jata hai, lekin uska poora purana data hamesha safe rehta hai.</div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Change Owner Password</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
+          <Field label="Current Password"><input type="password" style={inputStyle} value={pwdForm.current} onChange={(e) => setPwdForm({ ...pwdForm, current: e.target.value })} /></Field>
+          <Field label="New Password"><input type="password" style={inputStyle} value={pwdForm.next} onChange={(e) => setPwdForm({ ...pwdForm, next: e.target.value })} /></Field>
+        </div>
+        <Btn variant="gold" onClick={changePwd}>Update Password</Btn>
+        {pwdMsg && <div style={{ marginTop: 8, fontSize: 13, color: pwdMsg.includes("update") ? COLORS.ok : "#A63131" }}>{pwdMsg}</div>}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER DASHBOARD SHELL
+--------------------------------------------------------- */
+function OwnerDashboard({ session, cloud }) {
+  const [tab, setTab] = useState("live");
+  const tabs = [
+    { key: "live", label: "Live Feed" },
+    { key: "totals", label: "Monthly Totals" },
+    { key: "factory", label: "Factory Sales" },
+    { key: "rates", label: "Rates & Bill" },
+    { key: "salary", label: "Salary/Expenses" },
+    { key: "past", label: "Purana Data" },
+    { key: "manage", label: "Manage" },
+  ];
+  return (
+    <>
+      <Tabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === "live" && <OwnerLive cloud={cloud} />}
+      {tab === "totals" && <OwnerTotals cloud={cloud} />}
+      {tab === "factory" && <OwnerFactory cloud={cloud} />}
+      {tab === "rates" && <OwnerRates cloud={cloud} />}
+      {tab === "salary" && <OwnerSalary cloud={cloud} />}
+      {tab === "past" && <OwnerPastData cloud={cloud} />}
+      {tab === "manage" && <OwnerManage cloud={cloud} />}
+    </>
+  );
+}
+
+/* ---------------------------------------------------------
+   ROOT APP
+--------------------------------------------------------- */
+function App() {
+  const cloud = useCloud();
+  const [session, setSession] = useState(null);
+
+  const subtitle =
+    session?.role === "owner" ? "Owner Dashboard" : session?.role === "worker" ? "Worker Entry" : session?.role === "dukandar" ? "Apna Record" : "";
+
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
+      {!session ? (
+        <LoginScreen cloud={cloud} onLogin={setSession} />
+      ) : (
+        <>
+          <TopBar session={session} subtitle={subtitle} onLogout={() => setSession(null)} />
+          <StatusBar online={cloud.online} pendingCount={cloud.pendingCount} />
+          {session.role === "owner" && <OwnerDashboard session={session} cloud={cloud} />}
+          {session.role === "worker" && <WorkerDashboard session={session} cloud={cloud} />}
+          {session.role === "dukandar" && <DukandarDashboard session={session} cloud={cloud} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
