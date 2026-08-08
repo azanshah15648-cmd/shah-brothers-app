@@ -15,9 +15,10 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <!-- Babel (in-browser JSX compiler, no build step needed) -->
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<!-- Firebase (Realtime Database) -->
+<!-- Firebase (Realtime Database + Auth) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -36,9 +37,20 @@
   firebase.initializeApp(firebaseConfig);
   const db = firebase.database();
 
+  // ---- Sign in anonymously so security rules can require auth ----
+  const authReady = new Promise((resolve) => {
+    firebase.auth().onAuthStateChanged((user) => {
+      if (user) resolve(user);
+    });
+  });
+  firebase.auth().signInAnonymously().catch((err) => {
+    console.error("Anonymous sign-in failed:", err);
+  });
+
   // ---- window.storage shim (drop-in, same shape the app expects) ----
   window.storage = {
     get: async function (key, shared) {
+      await authReady;
       const snap = await db.ref('ledger/' + key).once('value');
       if (!snap.exists()) {
         throw new Error('Key not found: ' + key);
@@ -46,14 +58,17 @@
       return { key: key, value: snap.val(), shared: !!shared };
     },
     set: async function (key, value, shared) {
+      await authReady;
       await db.ref('ledger/' + key).set(value);
       return { key: key, value: value, shared: !!shared };
     },
     delete: async function (key, shared) {
+      await authReady;
       await db.ref('ledger/' + key).remove();
       return { key: key, deleted: true, shared: !!shared };
     },
     list: async function (prefix, shared) {
+      await authReady;
       const snap = await db.ref('ledger').once('value');
       const all = snap.val() || {};
       const keys = Object.keys(all).filter((k) => !prefix || k.startsWith(prefix));
@@ -508,7 +523,7 @@ function LoginScreen({ cloud, onLogin }) {
 /* ---------------------------------------------------------
    TOP BAR (shared across dashboards)
 --------------------------------------------------------- */
-function TopBar({ session, onLogout, subtitle }) {
+function TopBar({ session, onLogout, subtitle, onHome }) {
   return (
     <div
       style={{
@@ -523,6 +538,27 @@ function TopBar({ session, onLogout, subtitle }) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button
+          onClick={onHome}
+          title="Home"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 36,
+            height: 36,
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.25)",
+            background: "rgba(255,255,255,0.08)",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M3 11.5L12 4l9 7.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M5.5 10v9a1 1 0 0 0 1 1H10v-5.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V20h3.5a1 1 0 0 0 1-1v-9" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
         <Logo size={34} />
         <div>
           <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 17, letterSpacing: 0.5 }}>Shah Brothers</div>
@@ -568,6 +604,65 @@ function Tabs({ tabs, active, onChange }) {
   );
 }
 
+/* ---------------------------------------------------------
+   MONTHLY REGISTER — all months, totals only (no days)
+   Reused by Owner (per dukandar) and Dukandar (own view)
+--------------------------------------------------------- */
+function MonthlyRegister({ cloud, dukandarId, monthsBack = 24 }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!dukandarId) return;
+    (async () => {
+      setLoading(true);
+      const months = pastMonths(monthsBack);
+      const out = [];
+      for (const mk of months) {
+        const e = (await cloud.load(`entries:${dukandarId}:${mk}`, [])) || [];
+        if (e.length === 0) continue;
+        const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+        e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
+        const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
+        if (isAllZero) continue;
+        out.push({ mk, ...t });
+      }
+      setRows(out);
+      setLoading(false);
+    })();
+  }, [dukandarId, cloud, monthsBack]);
+
+  if (loading) return <div style={{ color: COLORS.inkSoft, padding: 10 }}>Load ho raha hai…</div>;
+
+  return (
+    <Card>
+      <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Register — Har Month ka Total</div>
+      {rows.length === 0 ? (
+        <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>Abhi tak koi mahine ka data nahi mila.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
+                <th style={{ padding: 8 }}>Month</th>
+                {ITEMS.map((i) => <th key={i} style={{ padding: 8 }}>{i} (kg)</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.mk} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                  <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{monthLabel(r.mk)}</td>
+                  {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 8 }}>{r[k]}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function MonthPicker({ value, onChange }) {
   const months = pastMonths(18);
   return (
@@ -582,7 +677,10 @@ function MonthPicker({ value, onChange }) {
 /* ---------------------------------------------------------
    WORKER DASHBOARD
 --------------------------------------------------------- */
-function WorkerDashboard({ session, cloud }) {
+function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp }) {
+  const [localView, setLocalView] = useState("entry");
+  const view = viewProp || localView;
+  const setView = setViewProp || setLocalView;
   const [dukandars, setDukandars] = useState([]);
   const [selected, setSelected] = useState(null);
   const [mk] = useState(monthKey());
@@ -645,6 +743,17 @@ function WorkerDashboard({ session, cloud }) {
 
   return (
     <div style={{ padding: 16, maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button onClick={() => setView("entry")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${COLORS.line}`, background: view === "entry" ? COLORS.red : "#fff", color: view === "entry" ? "#fff" : COLORS.maroon, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Dukandar Entry</button>
+        <button onClick={() => setView("factory")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${COLORS.line}`, background: view === "factory" ? COLORS.red : "#fff", color: view === "factory" ? "#fff" : COLORS.maroon, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Factory Sales</button>
+      </div>
+
+      {view === "factory" ? (
+        <div style={{ margin: "0 -16px" }}>
+          <FactoryPage cloud={cloud} canManageRate={false} session={session} />
+        </div>
+      ) : (
+      <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <div>
           <div style={{ fontWeight: 700, color: COLORS.maroon, fontSize: 17 }}>{monthLabel(mk)}</div>
@@ -760,6 +869,8 @@ function WorkerDashboard({ session, cloud }) {
           </Card>
         </>
       )}
+      </>
+      )}
     </div>
   );
 }
@@ -771,6 +882,7 @@ function DukandarDashboard({ session, cloud }) {
   const [mk, setMk] = useState(monthKey());
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("daily"); // daily | register
 
   useEffect(() => {
     (async () => {
@@ -791,48 +903,60 @@ function DukandarDashboard({ session, cloud }) {
     <div style={{ padding: 16, maxWidth: 680, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>{session.name}</div>
-        <MonthPicker value={mk} onChange={setMk} />
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => setView("daily")} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${COLORS.line}`, background: view === "daily" ? COLORS.red : "#fff", color: view === "daily" ? "#fff" : COLORS.maroon, fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}>Month-wise</button>
+          <button onClick={() => setView("register")} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${COLORS.line}`, background: view === "register" ? COLORS.red : "#fff", color: view === "register" ? "#fff" : COLORS.maroon, fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}>Register (Sab Months)</button>
+        </div>
       </div>
 
-      <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>{monthLabel(mk)} — Total</div>
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 8 }}>
-          {ITEM_KEYS.map((k, i) => (
-            <div key={k} style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 11, color: COLORS.inkSoft, textTransform: "uppercase" }}>{ITEMS[i]}</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.red }}>{total[k]} kg</div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>Daily Record</div>
-      <Card>
-        {loading ? (
-          <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div>
-        ) : entries.length === 0 ? (
-          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>Is month koi record nahi mila.</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-              <thead>
-                <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
-                  <th style={{ padding: 6 }}>Date</th>
-                  {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((e, idx) => (
-                  <tr key={idx} style={{ borderTop: `1px solid ${COLORS.line}` }}>
-                    <td style={{ padding: 6 }}>{fmtDate(e.date)}</td>
-                    {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 6 }}>{e[k]}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {view === "register" ? (
+        <MonthlyRegister cloud={cloud} dukandarId={session.id} />
+      ) : (
+        <>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+            <MonthPicker value={mk} onChange={setMk} />
           </div>
-        )}
-      </Card>
+          <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>{monthLabel(mk)} — Total</div>
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 8 }}>
+              {ITEM_KEYS.map((k, i) => (
+                <div key={k} style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: COLORS.inkSoft, textTransform: "uppercase" }}>{ITEMS[i]}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.red }}>{total[k]} kg</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <div style={{ fontWeight: 700, color: COLORS.maroon, marginBottom: 8 }}>Daily Record</div>
+          <Card>
+            {loading ? (
+              <div style={{ color: COLORS.inkSoft }}>Load ho raha hai…</div>
+            ) : entries.length === 0 ? (
+              <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>Is month koi record nahi mila.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                      <th style={{ padding: 6 }}>Date</th>
+                      {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((e, idx) => (
+                      <tr key={idx} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                        <td style={{ padding: 6 }}>{fmtDate(e.date)}</td>
+                        {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 6 }}>{e[k]}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </>
+      )}
       <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 10, textAlign: "center" }}>
         Sirf quantity dikhai jati hai — rate/amount ka access sirf owner ke paas hai.
       </div>
@@ -984,12 +1108,105 @@ function OwnerTotals({ cloud }) {
 }
 
 /* ---------------------------------------------------------
-   OWNER — FACTORY SALES (Page 3)
+   OWNER — DUKANDAR REGISTER (names list -> monthly totals)
 --------------------------------------------------------- */
-function OwnerFactory({ cloud }) {
+function OwnerRegister({ cloud }) {
+  const [dukandars, setDukandars] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      setDukandars(ds);
+      setLoading(false);
+    })();
+  }, [cloud]);
+
+  const filtered = dukandars.filter((d) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return d.name.toLowerCase().includes(q) || (d.nameUrdu || "").includes(search.trim()) || d.pin.toLowerCase().includes(q) || (d.phone || "").includes(search.trim());
+  });
+
+  const selDukandar = dukandars.find((d) => d.id === selected);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 800, margin: "0 auto" }}>
+      <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon, marginBottom: 6 }}>Dukandar Register</div>
+      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 16 }}>Naam par click karein — har mahine ka total (register style) dikhega.</div>
+
+      {selected ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 16, color: COLORS.maroon }}>{displayName(selDukandar)}</div>
+              <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>{selDukandar?.phone} · PIN {selDukandar?.pin}</div>
+            </div>
+            <Btn variant="ghost" onClick={() => setSelected(null)}>← Sab Dukandar</Btn>
+          </div>
+          <MonthlyRegister cloud={cloud} dukandarId={selected} />
+        </>
+      ) : (
+        <>
+          <input
+            style={{ ...inputStyle, marginBottom: 12 }}
+            placeholder="Naam, phone, ya PIN se search karein…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <Card style={{ padding: 0, overflow: "hidden" }}>
+            {loading ? (
+              <div style={{ padding: 16, color: COLORS.inkSoft }}>Load ho raha hai…</div>
+            ) : filtered.length === 0 ? (
+              <div style={{ padding: 16, color: COLORS.inkSoft }}>Koi dukandar nahi mila.</div>
+            ) : (
+              filtered.map((d, idx) => (
+                <button
+                  key={d.id}
+                  onClick={() => setSelected(d.id)}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "13px 16px",
+                    border: "none",
+                    borderTop: idx === 0 ? "none" : `1px solid ${COLORS.line}`,
+                    background: d.archived ? "#FBF6EC" : "#fff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 700, color: COLORS.maroon, fontSize: 14.5 }}>{displayName(d)} {d.archived && <span style={{ fontSize: 11, color: COLORS.warn, fontWeight: 600 }}>(Archived)</span>}</div>
+                    <div style={{ fontSize: 12, color: COLORS.inkSoft }}>{d.phone || "—"}</div>
+                  </div>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: COLORS.gold, background: "#F6EEDD", padding: "4px 10px", borderRadius: 999 }}>
+                    {d.pin}
+                  </div>
+                </button>
+              ))
+            )}
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   FACTORY SALES (Page 3) — shared by Owner & Worker
+   Worker: sirf quantity likh sakta hai (rate nahi dikhta)
+   Owner: poore month ka ek rate per item set karta hai
+--------------------------------------------------------- */
+function FactoryPage({ cloud, canManageRate, session }) {
   const [mk, setMk] = useState(monthKey());
   const [rows, setRows] = useState([]);
-  const [form, setForm] = useState({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "", rate: "" });
+  const [rate, setRate] = useState({ dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  const [form, setForm] = useState({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "" });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -997,25 +1214,26 @@ function OwnerFactory({ cloud }) {
       setLoading(true);
       const r = (await cloud.load(`factory:${mk}`, [])) || [];
       setRows(r.sort((a, b) => (a.date < b.date ? 1 : -1)));
+      const rt = await cloud.load(`factoryRate:${mk}`, null);
+      setRate(rt || { dum: "", kachra: "", charbi: "", machli: "", paya: "" });
       setLoading(false);
     })();
   }, [mk, cloud]);
 
   const addRow = async () => {
-    if (!form.factoryName || !form.qty || !form.rate) return;
+    if (!form.factoryName || !form.qty) return;
     const rec = {
       id: uid("F"),
       date: form.date,
       factoryName: form.factoryName,
       item: form.item,
       qty: Number(form.qty),
-      rate: Number(form.rate),
-      amount: Number(form.qty) * Number(form.rate),
+      enteredBy: session?.name || "Owner",
     };
     const updated = [rec, ...rows];
     setRows(updated);
     await cloud.save(`factory:${mk}`, updated);
-    setForm({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "", rate: "" });
+    setForm({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "" });
   };
 
   const removeRow = async (id) => {
@@ -1024,7 +1242,34 @@ function OwnerFactory({ cloud }) {
     await cloud.save(`factory:${mk}`, updated);
   };
 
-  const total = sum(rows, (r) => r.amount);
+  const saveRate = async () => {
+    await cloud.save(`factoryRate:${mk}`, rate);
+  };
+
+  // item-wise totals (qty), and amount computed from monthly rate,
+  // falling back to any legacy per-row rate/amount for old records
+  const itemTotals = useMemo(() => {
+    const t = {};
+    ITEM_KEYS.forEach((k) => (t[k] = { qty: 0, legacyAmount: 0 }));
+    rows.forEach((r) => {
+      const key = ITEM_KEYS[ITEMS.indexOf(r.item)];
+      if (!key) return;
+      t[key].qty += Number(r.qty) || 0;
+      if (r.amount !== undefined) t[key].legacyAmount += Number(r.amount) || 0;
+    });
+    return t;
+  }, [rows]);
+
+  const grandTotal = useMemo(() => {
+    return ITEM_KEYS.reduce((acc, k) => {
+      const rt = Number(rate[k]) || 0;
+      // Rows that carry their own legacy amount are counted as-is;
+      // rows without one use qty * this month's rate.
+      const legacyQty = rows.filter((r) => ITEM_KEYS[ITEMS.indexOf(r.item)] === k && r.amount !== undefined).reduce((a, r) => a + (Number(r.qty) || 0), 0);
+      const newQty = itemTotals[k].qty - legacyQty;
+      return acc + itemTotals[k].legacyAmount + newQty * rt;
+    }, 0);
+  }, [rate, itemTotals, rows]);
 
   return (
     <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
@@ -1036,7 +1281,7 @@ function OwnerFactory({ cloud }) {
       <Card style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Record</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
-          <Field label="Date"><input type="date" style={inputStyle} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+          <Field label="Date"><input type="date" style={inputStyle} value={form.date} max={todayISO()} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
           <Field label="Factory Name"><input style={inputStyle} value={form.factoryName} onChange={(e) => setForm({ ...form, factoryName: e.target.value })} placeholder="e.g. Al-Madina Factory" /></Field>
           <Field label="Item">
             <select style={inputStyle} value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })}>
@@ -1044,10 +1289,24 @@ function OwnerFactory({ cloud }) {
             </select>
           </Field>
           <Field label="Qty (kg)"><input type="number" style={inputStyle} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></Field>
-          <Field label="Rate (per kg)"><input type="number" style={inputStyle} value={form.rate} onChange={(e) => setForm({ ...form, rate: e.target.value })} /></Field>
         </div>
         <Btn onClick={addRow} style={{ marginTop: 6 }}>Add</Btn>
       </Card>
+
+      {canManageRate && (
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Is Month ka Rate (per kg)</div>
+          <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 10 }}>Poore month ke liye har item ka ek rate — factory jo bhi de raha ho.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 10 }}>
+            {ITEM_KEYS.map((k, i) => (
+              <Field key={k} label={ITEMS[i]}>
+                <input type="number" style={inputStyle} value={rate[k]} onChange={(e) => setRate({ ...rate, [k]: e.target.value })} placeholder="0" />
+              </Field>
+            ))}
+          </div>
+          <Btn variant="gold" onClick={saveRate} style={{ marginTop: 4 }}>Save Rate</Btn>
+        </Card>
+      )}
 
       <Card>
         {loading ? (
@@ -1058,7 +1317,7 @@ function OwnerFactory({ cloud }) {
               <thead>
                 <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
                   <th style={{ padding: 6 }}>Date</th><th style={{ padding: 6 }}>Factory</th><th style={{ padding: 6 }}>Item</th>
-                  <th style={{ padding: 6 }}>Qty</th><th style={{ padding: 6 }}>Rate</th><th style={{ padding: 6 }}>Amount</th><th />
+                  <th style={{ padding: 6 }}>Qty</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -1068,22 +1327,41 @@ function OwnerFactory({ cloud }) {
                     <td style={{ padding: 6, fontWeight: 600 }}>{r.factoryName}</td>
                     <td style={{ padding: 6 }}>{r.item}</td>
                     <td style={{ padding: 6 }}>{r.qty}</td>
-                    <td style={{ padding: 6 }}>{money(r.rate)}</td>
-                    <td style={{ padding: 6, fontWeight: 700, color: COLORS.red }}>{money(r.amount)}</td>
                     <td style={{ padding: 6 }}><button onClick={() => removeRow(r.id)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 12 }}>Remove</button></td>
                   </tr>
                 ))}
-                {rows.length === 0 && <tr><td colSpan={7} style={{ padding: 12, color: COLORS.inkSoft }}>Koi record nahi.</td></tr>}
+                {rows.length === 0 && <tr><td colSpan={5} style={{ padding: 12, color: COLORS.inkSoft }}>Koi record nahi.</td></tr>}
               </tbody>
             </table>
           </div>
         )}
-        {rows.length > 0 && (
-          <div style={{ marginTop: 10, textAlign: "right", fontWeight: 700, color: COLORS.gold, fontSize: 15 }}>
-            Total: {money(total)}
-          </div>
-        )}
       </Card>
+
+      {canManageRate && rows.length > 0 && (
+        <Card style={{ marginTop: 16 }}>
+          <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Item-wise Total</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                  <th style={{ padding: 6 }}>Item</th><th style={{ padding: 6 }}>Total Qty (kg)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ITEM_KEYS.map((k, i) => (
+                  <tr key={k} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: 6, fontWeight: 600 }}>{ITEMS[i]}</td>
+                    <td style={{ padding: 6 }}>{itemTotals[k].qty}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: 10, textAlign: "right", fontWeight: 700, color: COLORS.gold, fontSize: 15 }}>
+            Grand Total: {money(grandTotal)}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1100,6 +1378,7 @@ function OwnerRates({ cloud }) {
   const [advance, setAdvance] = useState([]);
   const [advForm, setAdvForm] = useState({ date: todayISO(), amount: "", note: "" });
   const [prevBL, setPrevBL] = useState("");
+  const [autoMinus, setAutoMinus] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -1123,6 +1402,8 @@ function OwnerRates({ cloud }) {
       setAdvance(adv);
       const bl = await cloud.load(`prevbl:${selected}:${mk}`, "");
       setPrevBL(bl || "");
+      const am = await cloud.load(`autoMinus:${selected}`, false);
+      setAutoMinus(!!am);
       setLoading(false);
     })();
   }, [selected, mk, cloud]);
@@ -1141,11 +1422,17 @@ function OwnerRates({ cloud }) {
   }));
   const billTotal = sum(lineAmounts, (l) => l.amount);
   const totalAdvance = sum(advance, (a) => a.amount);
-  const grandDue = billTotal + (Number(prevBL) || 0);
+  const grandDue = autoMinus ? billTotal + (Number(prevBL) || 0) - totalAdvance : billTotal + (Number(prevBL) || 0);
 
   const saveRates = async () => {
     await cloud.save(`rates:${selected}:${mk}`, rates);
     await cloud.save(`prevbl:${selected}:${mk}`, prevBL);
+  };
+
+  const toggleAutoMinus = async () => {
+    const next = !autoMinus;
+    setAutoMinus(next);
+    await cloud.save(`autoMinus:${selected}`, next);
   };
 
   const addAdvance = async () => {
@@ -1190,6 +1477,16 @@ function OwnerRates({ cloud }) {
             <Btn onClick={saveRates}>Save Rates &amp; Bill</Btn>
           </Card>
 
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Advanced Option</div>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginTop: 8 }}>
+              <input type="checkbox" checked={autoMinus} onChange={toggleAutoMinus} style={{ width: 18, height: 18 }} />
+              <span style={{ fontSize: 13.5 }}>
+                <strong>Advance Auto-Minus</strong> — {displayName(dukandar)} ke liye ON karein to advance khud bill se minus ho jayega. OFF hone par advance sirf track hota hai (jaisa default hai).
+              </span>
+            </label>
+          </Card>
+
           {/* BILL PREVIEW */}
           <Card style={{ marginBottom: 16, position: "relative", overflow: "hidden" }}>
             <Watermark />
@@ -1225,9 +1522,9 @@ function OwnerRates({ cloud }) {
                 <tfoot>
                   <tr><td colSpan={3} style={{ padding: 6, fontWeight: 700 }}>TOTAL</td><td style={{ padding: 6, fontWeight: 700 }}>{money(billTotal)}</td></tr>
                   <tr><td colSpan={3} style={{ padding: 6 }}>Previous B/L</td><td style={{ padding: 6 }}>{money(prevBL)}</td></tr>
-                  <tr><td colSpan={3} style={{ padding: 6 }}>Advance B/L (record only)</td><td style={{ padding: 6 }}>{money(totalAdvance)}</td></tr>
+                  <tr><td colSpan={3} style={{ padding: 6 }}>Advance B/L {autoMinus ? "(auto-minus ON)" : "(record only)"}</td><td style={{ padding: 6 }}>{autoMinus ? "− " + money(totalAdvance) : money(totalAdvance)}</td></tr>
                   <tr style={{ borderTop: `2px solid ${COLORS.gold}` }}>
-                    <td colSpan={3} style={{ padding: 6, fontWeight: 700, color: COLORS.gold }}>GRAND TOTAL (Bill + Prev B/L)</td>
+                    <td colSpan={3} style={{ padding: 6, fontWeight: 700, color: COLORS.gold }}>GRAND TOTAL {autoMinus ? "(Bill + Prev B/L − Advance)" : "(Bill + Prev B/L)"}</td>
                     <td style={{ padding: 6, fontWeight: 700, color: COLORS.gold }}>{money(grandDue)}</td>
                   </tr>
                 </tfoot>
@@ -1236,7 +1533,7 @@ function OwnerRates({ cloud }) {
           </Card>
 
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Advance Record (track-only — bill se auto-minus nahi hota)</div>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Advance Record {autoMinus ? "(auto-minus ON — bill se khud minus hota hai)" : "(track-only — bill se auto-minus nahi hota)"}</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10, marginBottom: 8 }}>
               <Field label="Date"><input type="date" style={inputStyle} value={advForm.date} onChange={(e) => setAdvForm({ ...advForm, date: e.target.value })} /></Field>
               <Field label="Amount"><input type="number" style={inputStyle} value={advForm.amount} onChange={(e) => setAdvForm({ ...advForm, amount: e.target.value })} /></Field>
@@ -1498,6 +1795,10 @@ function OwnerManage({ cloud }) {
   const [pwdMsg, setPwdMsg] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [editWorkerId, setEditWorkerId] = useState(null);
+  const [editWorkerForm, setEditWorkerForm] = useState({ name: "", nameUrdu: "", code: "" });
+  const [editDukandarId, setEditDukandarId] = useState(null);
+  const [editDukandarForm, setEditDukandarForm] = useState({ name: "", nameUrdu: "", phone: "", address: "", pin: "" });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -1538,6 +1839,38 @@ function OwnerManage({ cloud }) {
     await cloud.save("meta:dukandars", updated);
   };
 
+  const startEditWorker = (w) => {
+    setEditWorkerId(w.id);
+    setEditWorkerForm({ name: w.name, nameUrdu: w.nameUrdu || "", code: w.code });
+  };
+
+  const saveEditWorker = async () => {
+    if (!editWorkerForm.name || !editWorkerForm.code) return;
+    const updated = workers.map((w) =>
+      w.id === editWorkerId ? { ...w, name: editWorkerForm.name, nameUrdu: editWorkerForm.nameUrdu, code: editWorkerForm.code.toUpperCase() } : w
+    );
+    setWorkers(updated);
+    await cloud.save("meta:workers", updated);
+    setEditWorkerId(null);
+  };
+
+  const startEditDukandar = (d) => {
+    setEditDukandarId(d.id);
+    setEditDukandarForm({ name: d.name, nameUrdu: d.nameUrdu || "", phone: d.phone || "", address: d.address || "", pin: d.pin });
+  };
+
+  const saveEditDukandar = async () => {
+    if (!editDukandarForm.name || !editDukandarForm.pin) return;
+    const updated = dukandars.map((d) =>
+      d.id === editDukandarId
+        ? { ...d, name: editDukandarForm.name, nameUrdu: editDukandarForm.nameUrdu, phone: editDukandarForm.phone, address: editDukandarForm.address, pin: editDukandarForm.pin.toUpperCase() }
+        : d
+    );
+    setDukandars(updated);
+    await cloud.save("meta:dukandars", updated);
+    setEditDukandarId(null);
+  };
+
   const changePwd = async () => {
     setPwdMsg("");
     const meta = (await cloud.load("meta:owner", null)) || { password: "shah123" };
@@ -1568,11 +1901,29 @@ function OwnerManage({ cloud }) {
         <Btn onClick={addWorker}>Add Worker</Btn>
         <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
           {workers.map((w) => (
-            <span key={w.id} style={{ background: "#F6EEDD", padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, color: COLORS.maroon }}>
-              {displayName(w)} <span style={{ color: COLORS.inkSoft }}>({w.code})</span>
-            </span>
+            <button
+              key={w.id}
+              onClick={() => startEditWorker(w)}
+              style={{ background: "#F6EEDD", padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, color: COLORS.maroon, border: "none", cursor: "pointer" }}
+            >
+              {displayName(w)} <span style={{ color: COLORS.inkSoft }}>({w.code})</span> <span style={{ color: COLORS.gold }}>✎</span>
+            </button>
           ))}
         </div>
+        {editWorkerId && (
+          <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: "#FBF6EC", border: `1px solid ${COLORS.line}` }}>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Edit Worker</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
+              <Field label="Name (English)"><input style={inputStyle} value={editWorkerForm.name} onChange={(e) => setEditWorkerForm({ ...editWorkerForm, name: e.target.value })} /></Field>
+              <Field label="Naam (Urdu)"><input style={{ ...inputStyle, direction: "rtl" }} value={editWorkerForm.nameUrdu} onChange={(e) => setEditWorkerForm({ ...editWorkerForm, nameUrdu: e.target.value })} /></Field>
+              <Field label="Code"><input style={inputStyle} value={editWorkerForm.code} onChange={(e) => setEditWorkerForm({ ...editWorkerForm, code: e.target.value })} /></Field>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn onClick={saveEditWorker}>Save</Btn>
+              <Btn variant="ghost" onClick={() => setEditWorkerId(null)}>Cancel</Btn>
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card>
@@ -1632,7 +1983,10 @@ function OwnerManage({ cloud }) {
                     </select>
                   </td>
                   <td style={{ padding: 6 }}>{d.archived ? "Archived" : "Active"}</td>
-                  <td style={{ padding: 6 }}>
+                  <td style={{ padding: 6, display: "flex", gap: 10 }}>
+                    <button onClick={() => startEditDukandar(d)} style={{ border: "none", background: "none", color: COLORS.gold, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                      Edit
+                    </button>
                     <button onClick={() => toggleArchive(d.id)} style={{ border: "none", background: "none", color: d.archived ? COLORS.ok : "#A63131", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
                       {d.archived ? "Restore" : "Archive"}
                     </button>
@@ -1643,6 +1997,22 @@ function OwnerManage({ cloud }) {
             </tbody>
           </table>
         </div>
+        {editDukandarId && (
+          <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: "#FBF6EC", border: `1px solid ${COLORS.line}` }}>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Edit Dukandar</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
+              <Field label="Name (English)"><input style={inputStyle} value={editDukandarForm.name} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, name: e.target.value })} /></Field>
+              <Field label="Naam (Urdu)"><input style={{ ...inputStyle, direction: "rtl" }} value={editDukandarForm.nameUrdu} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, nameUrdu: e.target.value })} /></Field>
+              <Field label="Phone"><input style={inputStyle} value={editDukandarForm.phone} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, phone: e.target.value })} /></Field>
+              <Field label="Address"><input style={inputStyle} value={editDukandarForm.address} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, address: e.target.value })} /></Field>
+              <Field label="PIN"><input style={inputStyle} value={editDukandarForm.pin} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, pin: e.target.value })} /></Field>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn onClick={saveEditDukandar}>Save</Btn>
+              <Btn variant="ghost" onClick={() => setEditDukandarId(null)}>Cancel</Btn>
+            </div>
+          </div>
+        )}
         <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 8 }}>Archive karne se dukandar ki active list se hat jata hai, lekin uska poora purana data hamesha safe rehta hai.</div>
       </Card>
 
@@ -1662,11 +2032,11 @@ function OwnerManage({ cloud }) {
 /* ---------------------------------------------------------
    OWNER DASHBOARD SHELL
 --------------------------------------------------------- */
-function OwnerDashboard({ session, cloud }) {
-  const [tab, setTab] = useState("live");
+function OwnerDashboard({ session, cloud, tab, setTab }) {
   const tabs = [
     { key: "live", label: "Live Feed" },
     { key: "totals", label: "Monthly Totals" },
+    { key: "register", label: "Dukandar Register" },
     { key: "factory", label: "Factory Sales" },
     { key: "rates", label: "Rates & Bill" },
     { key: "salary", label: "Salary/Expenses" },
@@ -1678,7 +2048,8 @@ function OwnerDashboard({ session, cloud }) {
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
       {tab === "live" && <OwnerLive cloud={cloud} />}
       {tab === "totals" && <OwnerTotals cloud={cloud} />}
-      {tab === "factory" && <OwnerFactory cloud={cloud} />}
+      {tab === "register" && <OwnerRegister cloud={cloud} />}
+      {tab === "factory" && <FactoryPage cloud={cloud} canManageRate={true} session={session} />}
       {tab === "rates" && <OwnerRates cloud={cloud} />}
       {tab === "salary" && <OwnerSalary cloud={cloud} />}
       {tab === "past" && <OwnerPastData cloud={cloud} />}
@@ -1693,9 +2064,16 @@ function OwnerDashboard({ session, cloud }) {
 function App() {
   const cloud = useCloud();
   const [session, setSession] = useState(null);
+  const [ownerTab, setOwnerTab] = useState("live");
+  const [workerView, setWorkerView] = useState("entry");
 
   const subtitle =
     session?.role === "owner" ? "Owner Dashboard" : session?.role === "worker" ? "Worker Entry" : session?.role === "dukandar" ? "Apna Record" : "";
+
+  const goHome = () => {
+    if (session?.role === "owner") setOwnerTab("live");
+    if (session?.role === "worker") setWorkerView("entry");
+  };
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.bg, fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
@@ -1703,10 +2081,10 @@ function App() {
         <LoginScreen cloud={cloud} onLogin={setSession} />
       ) : (
         <>
-          <TopBar session={session} subtitle={subtitle} onLogout={() => setSession(null)} />
+          <TopBar session={session} subtitle={subtitle} onLogout={() => setSession(null)} onHome={goHome} />
           <StatusBar online={cloud.online} pendingCount={cloud.pendingCount} />
-          {session.role === "owner" && <OwnerDashboard session={session} cloud={cloud} />}
-          {session.role === "worker" && <WorkerDashboard session={session} cloud={cloud} />}
+          {session.role === "owner" && <OwnerDashboard session={session} cloud={cloud} tab={ownerTab} setTab={setOwnerTab} />}
+          {session.role === "worker" && <WorkerDashboard session={session} cloud={cloud} view={workerView} setView={setWorkerView} />}
           {session.role === "dukandar" && <DukandarDashboard session={session} cloud={cloud} />}
         </>
       )}
