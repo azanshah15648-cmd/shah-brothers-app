@@ -118,6 +118,87 @@ function fmtDate(iso) {
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
+/* ---------------------------------------------------------
+   AUTO URDU NAME (best-effort) — dictionary + fallback rules
+   Not a real translator; auto-fills a guess, still editable.
+--------------------------------------------------------- */
+const URDU_NAME_DICT = {
+  muhammad: "محمد", mohammad: "محمد", mohammed: "محمد", ahmed: "احمد", ahmad: "احمد",
+  ali: "علی", hassan: "حسن", hasan: "حسن", hussain: "حسین", husain: "حسین", hussein: "حسین",
+  bilal: "بلال", azan: "اذان", azaan: "اذان", kashif: "کاشف", farhan: "فرحان", imran: "عمران",
+  asif: "آصف", naveed: "نوید", shahzad: "شہزاد", tariq: "طارق", waqas: "وقاص", zubair: "زبیر",
+  faisal: "فیصل", rizwan: "رضوان", adeel: "عدیل", usman: "عثمان", umar: "عمر", omar: "عمر",
+  haris: "حارث", salman: "سلمان", junaid: "جنید", kamran: "کامران", nasir: "ناصر", yasir: "یاسر",
+  shoaib: "شعیب", irfan: "عرفان", aamir: "عامر", amir: "عامر", nadeem: "ندیم", rashid: "راشد",
+  saleem: "سلیم", salim: "سلیم", sohail: "سہیل", tahir: "طاہر", zeeshan: "ذیشان", danish: "دانش",
+  fahad: "فہد", hamza: "حمزہ", sajjad: "سجاد", waseem: "وسیم", arif: "عارف", aslam: "اسلم",
+  aziz: "عزیز", bashir: "بشیر", ghulam: "غلام", hafeez: "حفیظ", ikram: "اکرم", jameel: "جمیل",
+  jamil: "جمیل", karim: "کریم", kareem: "کریم", latif: "لطیف", mehmood: "محمود", mahmood: "محمود",
+  nazir: "نذیر", pervez: "پرویز", qadir: "قادر", rafiq: "رفیق", sabir: "صابر", tanveer: "تنویر",
+  yaqub: "یعقوب", zafar: "ظفر", abdullah: "عبداللہ", abdul: "عبد", rehman: "رحمان", rahman: "رحمان",
+  ayaz: "ایاز", ayub: "ایوب", babar: "بابر", bilawal: "بلاول", dawood: "داؤد", ehsan: "احسان",
+  fazal: "فضل", habib: "حبیب", ibrahim: "ابراہیم", idrees: "ادریس", ishaq: "اسحاق", jawad: "جواد",
+  javed: "جاوید", kaleem: "کلیم", khalid: "خالد", majeed: "مجید", mansoor: "منصور", moin: "معین",
+  mubeen: "مبین", mudassar: "مدثر", munir: "منیر", nabeel: "نبیل", naeem: "نعیم", numan: "نعمان",
+  qasim: "قاسم", raheel: "راحیل", raees: "رئیس", raza: "رضا", saad: "سعد", sarfraz: "سرفراز",
+  shahid: "شاہد", shahbaz: "شہباز", sultan: "سلطان", suleman: "سلیمان", talha: "طلحہ", touqeer: "توقیر",
+  umair: "عمیر", waleed: "ولید", yasin: "یاسین", younas: "یونس", yousaf: "یوسف", yousuf: "یوسف",
+  zaheer: "ظہیر", zain: "زین", zakir: "ذاکر", zamir: "ضمیر", akram: "اکرم", anwar: "انور",
+  ashraf: "اشرف", asad: "اسد", bashar: "بشر", daniyal: "دانیال", farooq: "فاروق", ghaffar: "غفار",
+  hamid: "حامد", haroon: "ہارون", ismail: "اسماعیل", javaid: "جاوید", khurram: "خرم", liaquat: "لیاقت",
+  mazhar: "مظہر", moeen: "معین", mumtaz: "ممتاز", nawaz: "نواز", niaz: "نیاز", noman: "نعمان",
+  qamar: "قمر", riaz: "ریاض", saif: "سیف", sami: "سامی", shakeel: "شکیل", sharif: "شریف",
+  taimoor: "تیمور", waris: "وارث", zahid: "زاہد",
+  // common shop / business words
+  store: "اسٹور", stores: "اسٹورز", traders: "ٹریڈرز", brothers: "برادران", general: "جنرل",
+  corner: "کارنر", sons: "سنز", meat: "میٹ", market: "مارکیٹ", shop: "شاپ", chicken: "چکن",
+  poultry: "پولٹری", house: "ہاؤس", center: "سینٹر", centre: "سینٹر", and: "اینڈ", co: "کو",
+};
+
+function transliterateWord(word) {
+  const lower = word.toLowerCase();
+  if (URDU_NAME_DICT[lower]) return URDU_NAME_DICT[lower];
+  // fallback: rough letter/cluster based transliteration (best-effort only)
+  let s = lower;
+  const clusters = [
+    ["kh", "خ"], ["gh", "غ"], ["sh", "ش"], ["ch", "چ"], ["ph", "ف"],
+    ["th", "تھ"], ["dh", "دھ"], ["bh", "بھ"], ["zh", "ژ"],
+    ["aa", "ا"], ["ee", "ی"], ["oo", "و"], ["ai", "ے"], ["au", "او"],
+  ];
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    let matched = false;
+    for (const [pat, rep] of clusters) {
+      if (s.slice(i, i + pat.length) === pat) {
+        out += rep;
+        i += pat.length;
+        matched = true;
+        break;
+      }
+    }
+    if (matched) continue;
+    const single = {
+      a: "ا", b: "ب", c: "ک", d: "د", e: "ے", f: "ف", g: "گ", h: "ہ",
+      i: "ی", j: "ج", k: "ک", l: "ل", m: "م", n: "ن", o: "او", p: "پ",
+      q: "ق", r: "ر", s: "س", t: "ت", u: "و", v: "و", w: "و", x: "کس",
+      y: "ی", z: "ز",
+    };
+    out += single[s[i]] || "";
+    i += 1;
+  }
+  return out;
+}
+
+function autoUrduName(fullName) {
+  if (!fullName || !fullName.trim()) return "";
+  return fullName
+    .trim()
+    .split(/\s+/)
+    .map(transliterateWord)
+    .join(" ");
+}
+
 function displayName(obj) {
   if (!obj) return "";
   return obj.nameUrdu ? `${obj.name} / ${obj.nameUrdu}` : obj.name;
@@ -1790,15 +1871,19 @@ function OwnerManage({ cloud }) {
   const [workers, setWorkers] = useState([]);
   const [dukandars, setDukandars] = useState([]);
   const [wForm, setWForm] = useState({ name: "", nameUrdu: "", code: "" });
+  const [wUrduTouched, setWUrduTouched] = useState(false);
   const [dForm, setDForm] = useState({ name: "", nameUrdu: "", phone: "", address: "", pin: "", workerId: "" });
+  const [dUrduTouched, setDUrduTouched] = useState(false);
   const [pwdForm, setPwdForm] = useState({ current: "", next: "" });
   const [pwdMsg, setPwdMsg] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [editWorkerId, setEditWorkerId] = useState(null);
   const [editWorkerForm, setEditWorkerForm] = useState({ name: "", nameUrdu: "", code: "" });
+  const [editWUrduTouched, setEditWUrduTouched] = useState(false);
   const [editDukandarId, setEditDukandarId] = useState(null);
   const [editDukandarForm, setEditDukandarForm] = useState({ name: "", nameUrdu: "", phone: "", address: "", pin: "" });
+  const [editDUrduTouched, setEditDUrduTouched] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -1816,6 +1901,7 @@ function OwnerManage({ cloud }) {
     setWorkers(updated);
     await cloud.save("meta:workers", updated);
     setWForm({ name: "", nameUrdu: "", code: "" });
+    setWUrduTouched(false);
   };
 
   const addDukandar = async () => {
@@ -1825,6 +1911,7 @@ function OwnerManage({ cloud }) {
     setDukandars(updated);
     await cloud.save("meta:dukandars", updated);
     setDForm({ name: "", nameUrdu: "", phone: "", address: "", pin: "", workerId: "" });
+    setDUrduTouched(false);
   };
 
   const reassign = async (dukandarId, workerId) => {
@@ -1842,6 +1929,7 @@ function OwnerManage({ cloud }) {
   const startEditWorker = (w) => {
     setEditWorkerId(w.id);
     setEditWorkerForm({ name: w.name, nameUrdu: w.nameUrdu || "", code: w.code });
+    setEditWUrduTouched(!!w.nameUrdu);
   };
 
   const saveEditWorker = async () => {
@@ -1857,6 +1945,7 @@ function OwnerManage({ cloud }) {
   const startEditDukandar = (d) => {
     setEditDukandarId(d.id);
     setEditDukandarForm({ name: d.name, nameUrdu: d.nameUrdu || "", phone: d.phone || "", address: d.address || "", pin: d.pin });
+    setEditDUrduTouched(!!d.nameUrdu);
   };
 
   const saveEditDukandar = async () => {
@@ -1894,8 +1983,24 @@ function OwnerManage({ cloud }) {
       <Card>
         <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Worker</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
-          <Field label="Name (English)"><input style={inputStyle} value={wForm.name} onChange={(e) => setWForm({ ...wForm, name: e.target.value })} /></Field>
-          <Field label="Naam (Urdu) — optional"><input style={{ ...inputStyle, direction: "rtl", fontFamily: "'Noto Nastaliq Urdu', serif" }} value={wForm.nameUrdu} onChange={(e) => setWForm({ ...wForm, nameUrdu: e.target.value })} placeholder="مثلاً بلال" /></Field>
+          <Field label="Name (English)">
+            <input
+              style={inputStyle}
+              value={wForm.name}
+              onChange={(e) => {
+                const v = e.target.value;
+                setWForm({ ...wForm, name: v, nameUrdu: wUrduTouched ? wForm.nameUrdu : autoUrduName(v) });
+              }}
+            />
+          </Field>
+          <Field label="Naam (Urdu) — auto, chahen to edit karein">
+            <input
+              style={{ ...inputStyle, direction: "rtl", fontFamily: "'Noto Nastaliq Urdu', serif" }}
+              value={wForm.nameUrdu}
+              onChange={(e) => { setWForm({ ...wForm, nameUrdu: e.target.value }); setWUrduTouched(true); }}
+              placeholder="مثلاً بلال"
+            />
+          </Field>
           <Field label="Unique Code"><input style={inputStyle} value={wForm.code} onChange={(e) => setWForm({ ...wForm, code: e.target.value })} placeholder="e.g. W1" /></Field>
         </div>
         <Btn onClick={addWorker}>Add Worker</Btn>
@@ -1914,8 +2019,23 @@ function OwnerManage({ cloud }) {
           <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: "#FBF6EC", border: `1px solid ${COLORS.line}` }}>
             <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Edit Worker</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
-              <Field label="Name (English)"><input style={inputStyle} value={editWorkerForm.name} onChange={(e) => setEditWorkerForm({ ...editWorkerForm, name: e.target.value })} /></Field>
-              <Field label="Naam (Urdu)"><input style={{ ...inputStyle, direction: "rtl" }} value={editWorkerForm.nameUrdu} onChange={(e) => setEditWorkerForm({ ...editWorkerForm, nameUrdu: e.target.value })} /></Field>
+              <Field label="Name (English)">
+                <input
+                  style={inputStyle}
+                  value={editWorkerForm.name}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setEditWorkerForm({ ...editWorkerForm, name: v, nameUrdu: editWUrduTouched ? editWorkerForm.nameUrdu : autoUrduName(v) });
+                  }}
+                />
+              </Field>
+              <Field label="Naam (Urdu) — auto">
+                <input
+                  style={{ ...inputStyle, direction: "rtl" }}
+                  value={editWorkerForm.nameUrdu}
+                  onChange={(e) => { setEditWorkerForm({ ...editWorkerForm, nameUrdu: e.target.value }); setEditWUrduTouched(true); }}
+                />
+              </Field>
               <Field label="Code"><input style={inputStyle} value={editWorkerForm.code} onChange={(e) => setEditWorkerForm({ ...editWorkerForm, code: e.target.value })} /></Field>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
@@ -1929,8 +2049,24 @@ function OwnerManage({ cloud }) {
       <Card>
         <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Dukandar</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
-          <Field label="Name (English)"><input style={inputStyle} value={dForm.name} onChange={(e) => setDForm({ ...dForm, name: e.target.value })} /></Field>
-          <Field label="Naam (Urdu) — optional"><input style={{ ...inputStyle, direction: "rtl", fontFamily: "'Noto Nastaliq Urdu', serif" }} value={dForm.nameUrdu} onChange={(e) => setDForm({ ...dForm, nameUrdu: e.target.value })} placeholder="مثلاً احمد اسٹور" /></Field>
+          <Field label="Name (English)">
+            <input
+              style={inputStyle}
+              value={dForm.name}
+              onChange={(e) => {
+                const v = e.target.value;
+                setDForm({ ...dForm, name: v, nameUrdu: dUrduTouched ? dForm.nameUrdu : autoUrduName(v) });
+              }}
+            />
+          </Field>
+          <Field label="Naam (Urdu) — auto, chahen to edit karein">
+            <input
+              style={{ ...inputStyle, direction: "rtl", fontFamily: "'Noto Nastaliq Urdu', serif" }}
+              value={dForm.nameUrdu}
+              onChange={(e) => { setDForm({ ...dForm, nameUrdu: e.target.value }); setDUrduTouched(true); }}
+              placeholder="مثلاً احمد اسٹور"
+            />
+          </Field>
           <Field label="Phone"><input style={inputStyle} value={dForm.phone} onChange={(e) => setDForm({ ...dForm, phone: e.target.value })} /></Field>
           <Field label="Address"><input style={inputStyle} value={dForm.address} onChange={(e) => setDForm({ ...dForm, address: e.target.value })} /></Field>
           <Field label="Unique PIN"><input style={inputStyle} value={dForm.pin} onChange={(e) => setDForm({ ...dForm, pin: e.target.value })} placeholder="e.g. D101" /></Field>
@@ -2001,8 +2137,23 @@ function OwnerManage({ cloud }) {
           <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: "#FBF6EC", border: `1px solid ${COLORS.line}` }}>
             <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Edit Dukandar</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
-              <Field label="Name (English)"><input style={inputStyle} value={editDukandarForm.name} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, name: e.target.value })} /></Field>
-              <Field label="Naam (Urdu)"><input style={{ ...inputStyle, direction: "rtl" }} value={editDukandarForm.nameUrdu} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, nameUrdu: e.target.value })} /></Field>
+              <Field label="Name (English)">
+                <input
+                  style={inputStyle}
+                  value={editDukandarForm.name}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setEditDukandarForm({ ...editDukandarForm, name: v, nameUrdu: editDUrduTouched ? editDukandarForm.nameUrdu : autoUrduName(v) });
+                  }}
+                />
+              </Field>
+              <Field label="Naam (Urdu) — auto">
+                <input
+                  style={{ ...inputStyle, direction: "rtl" }}
+                  value={editDukandarForm.nameUrdu}
+                  onChange={(e) => { setEditDukandarForm({ ...editDukandarForm, nameUrdu: e.target.value }); setEditDUrduTouched(true); }}
+                />
+              </Field>
               <Field label="Phone"><input style={inputStyle} value={editDukandarForm.phone} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, phone: e.target.value })} /></Field>
               <Field label="Address"><input style={inputStyle} value={editDukandarForm.address} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, address: e.target.value })} /></Field>
               <Field label="PIN"><input style={inputStyle} value={editDukandarForm.pin} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, pin: e.target.value })} /></Field>
