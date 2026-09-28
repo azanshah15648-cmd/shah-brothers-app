@@ -199,9 +199,36 @@ function autoUrduName(fullName) {
     .join(" ");
 }
 
+// Only the first letter of each word is capital: "AHMED store" -> "Ahmed Store"
+function titleCase(str) {
+  if (!str) return "";
+  return str.toLowerCase().replace(/(^|[\s\-.(&/])([a-z])/g, (m, sep, ch) => sep + ch.toUpperCase());
+}
+
+// Sort customers by code in natural order: D2 before D11, D11 before D12
+function sortCustomers(list) {
+  return [...(list || [])].sort((a, b) =>
+    (a.pin || "").localeCompare(b.pin || "", undefined, { numeric: true, sensitivity: "base" })
+  );
+}
+
+// Next free customer code after the highest existing one (D101 -> D102)
+function nextCustomerCode(list) {
+  let best = null;
+  (list || []).forEach((d) => {
+    const m = /^([A-Za-z]*)(\d+)$/.exec((d.pin || "").trim());
+    if (m) {
+      const num = parseInt(m[2], 10);
+      if (!best || num > best.num) best = { prefix: m[1].toUpperCase(), num, width: m[2].length };
+    }
+  });
+  if (!best) return "D101";
+  return best.prefix + String(best.num + 1).padStart(best.width, "0");
+}
+
 function displayName(obj) {
   if (!obj) return "";
-  return obj.name;
+  return titleCase(obj.name);
 }
 
 function speakName(obj) {
@@ -533,7 +560,7 @@ function LoginScreen({ cloud, onLogin }) {
         if (w) onLogin({ role: "worker", id: w.id, name: displayName(w) });
         else setErr("This code doesn't match any worker.");
       } else if (role === "dukandar") {
-        const dukandars = (await cloud.load("meta:dukandars", [])) || [];
+        const dukandars = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
         const d = dukandars.find((x) => x.pin.toLowerCase() === code.trim().toLowerCase());
         if (d) onLogin({ role: "dukandar", id: d.id, name: displayName(d) });
         else setErr("This PIN doesn't match any customer.");
@@ -821,7 +848,7 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
 
   useEffect(() => {
     (async () => {
-      const all = (await cloud.load("meta:dukandars", [])) || [];
+      const all = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
       const mine = all.filter((d) => d.workerId === session.id && !d.archived);
       setDukandars(mine);
       if (mine.length) setSelected(mine[0].id);
@@ -1108,7 +1135,7 @@ function OwnerLive({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const ds = (await cloud.load("meta:dukandars", [])) || [];
+    const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
     setDukandars(ds);
     const all = [];
     for (const d of ds.filter((x) => !x.archived)) {
@@ -1172,7 +1199,7 @@ function OwnerTotals({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
       setDukandars(ds);
       const out = [];
       for (const d of ds.filter((x) => !x.archived)) {
@@ -1252,7 +1279,7 @@ function OwnerRegister({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
       setDukandars(ds);
       setLoading(false);
     })();
@@ -1417,7 +1444,7 @@ function FactoryPage({ cloud, canManageRate, session }) {
         <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Record</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
           <Field label="Date"><input type="date" style={inputStyle} value={form.date} max={todayISO()} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
-          <Field label="Factory Name"><input style={inputStyle} value={form.factoryName} onChange={(e) => setForm({ ...form, factoryName: e.target.value })} placeholder="e.g. Al-Madina Factory" /></Field>
+          <Field label="Factory Name"><input style={inputStyle} value={form.factoryName} onChange={(e) => setForm({ ...form, factoryName: titleCase(e.target.value) })} placeholder="e.g. Al-Madina Factory" /></Field>
           <Field label="Item">
             <select style={inputStyle} value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })}>
               {ITEMS.map((i) => <option key={i} value={i}>{i}</option>)}
@@ -1518,7 +1545,7 @@ function OwnerRates({ cloud }) {
 
   useEffect(() => {
     (async () => {
-      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
       setDukandars(ds.filter((d) => !d.archived));
       if (ds.length && !selected) setSelected(ds[0].id);
     })();
@@ -1829,7 +1856,7 @@ function OwnerPastData({ cloud }) {
 
   useEffect(() => {
     (async () => {
-      const ds = (await cloud.load("meta:dukandars", [])) || [];
+      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
       setDukandars(ds);
       if (ds.length && !selected) setSelected(ds[0].id);
     })();
@@ -1938,11 +1965,17 @@ function OwnerManage({ cloud }) {
   const [editDukandarId, setEditDukandarId] = useState(null);
   const [editDukandarForm, setEditDukandarForm] = useState({ name: "", nameUrdu: "", phone: "", address: "", pin: "" });
   const [editDUrduTouched, setEditDUrduTouched] = useState(false);
+  const [dPinTouched, setDPinTouched] = useState(false);
+  const [dMsg, setDMsg] = useState("");
+  const [editDMsg, setEditDMsg] = useState("");
+  const nextCode = useMemo(() => nextCustomerCode(dukandars), [dukandars]);
+  const pinTaken = (pin, exceptId) =>
+    dukandars.some((d) => d.id !== exceptId && (d.pin || "").toUpperCase() === pin.toUpperCase());
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setWorkers((await cloud.load("meta:workers", [])) || []);
-    setDukandars((await cloud.load("meta:dukandars", [])) || []);
+    setDukandars(sortCustomers((await cloud.load("meta:dukandars", [])) || []));
     setLoading(false);
   }, [cloud]);
 
@@ -1959,13 +1992,20 @@ function OwnerManage({ cloud }) {
   };
 
   const addDukandar = async () => {
-    if (!dForm.name || !dForm.pin) return;
-    const rec = { id: uid("D"), name: dForm.name, nameUrdu: dForm.nameUrdu, phone: dForm.phone, address: dForm.address, pin: dForm.pin.toUpperCase(), workerId: dForm.workerId || null, archived: false, photo: "" };
-    const updated = [...dukandars, rec];
+    if (!dForm.name) return;
+    const finalPin = (dPinTouched && dForm.pin.trim() ? dForm.pin.trim() : nextCode).toUpperCase();
+    if (pinTaken(finalPin)) {
+      setDMsg("This code is already used by another customer.");
+      return;
+    }
+    const rec = { id: uid("D"), name: dForm.name, nameUrdu: dForm.nameUrdu, phone: dForm.phone, address: dForm.address, pin: finalPin, workerId: dForm.workerId || null, archived: false, photo: "" };
+    const updated = sortCustomers([...dukandars, rec]);
     setDukandars(updated);
     await cloud.save("meta:dukandars", updated);
     setDForm({ name: "", nameUrdu: "", phone: "", address: "", pin: "", workerId: "" });
     setDUrduTouched(false);
+    setDPinTouched(false);
+    setDMsg("");
   };
 
   const reassign = async (dukandarId, workerId) => {
@@ -2004,14 +2044,19 @@ function OwnerManage({ cloud }) {
 
   const saveEditDukandar = async () => {
     if (!editDukandarForm.name || !editDukandarForm.pin) return;
-    const updated = dukandars.map((d) =>
+    if (pinTaken(editDukandarForm.pin.trim(), editDukandarId)) {
+      setEditDMsg("This code is already used by another customer.");
+      return;
+    }
+    const updated = sortCustomers(dukandars.map((d) =>
       d.id === editDukandarId
-        ? { ...d, name: editDukandarForm.name, nameUrdu: editDukandarForm.nameUrdu, phone: editDukandarForm.phone, address: editDukandarForm.address, pin: editDukandarForm.pin.toUpperCase() }
+        ? { ...d, name: editDukandarForm.name, nameUrdu: editDukandarForm.nameUrdu, phone: editDukandarForm.phone, address: editDukandarForm.address, pin: editDukandarForm.pin.trim().toUpperCase() }
         : d
-    );
+    ));
     setDukandars(updated);
     await cloud.save("meta:dukandars", updated);
     setEditDukandarId(null);
+    setEditDMsg("");
   };
 
   const changePwd = async () => {
@@ -2042,7 +2087,7 @@ function OwnerManage({ cloud }) {
               style={inputStyle}
               value={wForm.name}
               onChange={(e) => {
-                const v = e.target.value;
+                const v = titleCase(e.target.value);
                 setWForm({ ...wForm, name: v, nameUrdu: wUrduTouched ? wForm.nameUrdu : autoUrduName(v) });
               }}
             />
@@ -2078,7 +2123,7 @@ function OwnerManage({ cloud }) {
                   style={inputStyle}
                   value={editWorkerForm.name}
                   onChange={(e) => {
-                    const v = e.target.value;
+                    const v = titleCase(e.target.value);
                     setEditWorkerForm({ ...editWorkerForm, name: v, nameUrdu: editWUrduTouched ? editWorkerForm.nameUrdu : autoUrduName(v) });
                   }}
                 />
@@ -2108,7 +2153,7 @@ function OwnerManage({ cloud }) {
               style={inputStyle}
               value={dForm.name}
               onChange={(e) => {
-                const v = e.target.value;
+                const v = titleCase(e.target.value);
                 setDForm({ ...dForm, name: v, nameUrdu: dUrduTouched ? dForm.nameUrdu : autoUrduName(v) });
               }}
             />
@@ -2123,7 +2168,7 @@ function OwnerManage({ cloud }) {
           </Field>
           <Field label="Phone"><input style={inputStyle} value={dForm.phone} onChange={(e) => setDForm({ ...dForm, phone: e.target.value })} /></Field>
           <Field label="Address"><input style={inputStyle} value={dForm.address} onChange={(e) => setDForm({ ...dForm, address: e.target.value })} /></Field>
-          <Field label="Unique PIN"><input style={inputStyle} value={dForm.pin} onChange={(e) => setDForm({ ...dForm, pin: e.target.value })} placeholder="e.g. D101" /></Field>
+          <Field label="Customer Code (auto — next number)"><input style={inputStyle} value={dPinTouched ? dForm.pin : nextCode} onChange={(e) => { setDForm({ ...dForm, pin: e.target.value }); setDPinTouched(true); setDMsg(""); }} /></Field>
           <Field label="Assign Worker">
             <select style={inputStyle} value={dForm.workerId} onChange={(e) => setDForm({ ...dForm, workerId: e.target.value })}>
               <option value="">— none —</option>
@@ -2132,6 +2177,7 @@ function OwnerManage({ cloud }) {
           </Field>
         </div>
         <Btn onClick={addDukandar}>Add Customer</Btn>
+        {dMsg && <div style={{ marginTop: 8, fontSize: 13, color: "#A63131" }}>{dMsg}</div>}
       </Card>
 
       <Card>
@@ -2196,7 +2242,7 @@ function OwnerManage({ cloud }) {
                   style={inputStyle}
                   value={editDukandarForm.name}
                   onChange={(e) => {
-                    const v = e.target.value;
+                    const v = titleCase(e.target.value);
                     setEditDukandarForm({ ...editDukandarForm, name: v, nameUrdu: editDUrduTouched ? editDukandarForm.nameUrdu : autoUrduName(v) });
                   }}
                 />
@@ -2210,12 +2256,13 @@ function OwnerManage({ cloud }) {
               </Field>
               <Field label="Phone"><input style={inputStyle} value={editDukandarForm.phone} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, phone: e.target.value })} /></Field>
               <Field label="Address"><input style={inputStyle} value={editDukandarForm.address} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, address: e.target.value })} /></Field>
-              <Field label="PIN"><input style={inputStyle} value={editDukandarForm.pin} onChange={(e) => setEditDukandarForm({ ...editDukandarForm, pin: e.target.value })} /></Field>
+              <Field label="PIN"><input style={inputStyle} value={editDukandarForm.pin} onChange={(e) => { setEditDukandarForm({ ...editDukandarForm, pin: e.target.value }); setEditDMsg(""); }} /></Field>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <Btn onClick={saveEditDukandar}>Save</Btn>
               <Btn variant="ghost" onClick={() => setEditDukandarId(null)}>Cancel</Btn>
             </div>
+            {editDMsg && <div style={{ marginTop: 8, fontSize: 13, color: "#A63131" }}>{editDMsg}</div>}
           </div>
         )}
         <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 8 }}>Archiving removes the customer from the active list, but all their old data always stays safe.</div>
