@@ -279,6 +279,70 @@ function SpeakerButton({ obj, size = 22 }) {
   );
 }
 
+/* ---------------------------------------------------------
+   PHOTO ATTACHMENT — compressed base64, stored with a record
+   (This is a manual-entry backup photo, not auto data-extraction.
+    Numbers are always typed by a person; the photo is only proof.)
+--------------------------------------------------------- */
+function compressImageFile(file, maxWidth = 900, quality = 0.6) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Image load failed"));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error("File read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function PhotoUpload({ value, onChange, label = "Photo (optional)" }) {
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+
+  const handleFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const dataUrl = await compressImageFile(file);
+      onChange(dataUrl);
+    } catch (err) {
+      console.error("Photo attach failed:", err);
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.inkSoft, marginBottom: 6, textTransform: "uppercase" }}>{label}</div>
+      {value ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <img src={value} alt="attached" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${COLORS.line}` }} />
+          <Btn variant="ghost" onClick={() => onChange(null)}>Remove Photo</Btn>
+        </div>
+      ) : (
+        <>
+          <input ref={inputRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ fontSize: 12.5 }} />
+          {busy && <div style={{ fontSize: 12, color: COLORS.inkSoft, marginTop: 4 }}>Attaching…</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function uid(prefix) {
   return prefix + Math.random().toString(36).slice(2, 8).toUpperCase();
 }
@@ -841,7 +905,7 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
   const [selected, setSelected] = useState(null);
   const [mk] = useState(monthKey());
   const [entries, setEntries] = useState([]);
-  const [form, setForm] = useState({ date: todayISO(), dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  const [form, setForm] = useState({ date: todayISO(), dum: "", kachra: "", charbi: "", machli: "", paya: "", photo: null });
   const [submission, setSubmission] = useState(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -874,12 +938,13 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
       charbi: Number(form.charbi) || 0,
       machli: Number(form.machli) || 0,
       paya: Number(form.paya) || 0,
+      photo: form.photo || null,
       enteredBy: session.name,
     };
     const updated = [rec, ...entries.filter((e) => e.date !== rec.date)];
     setEntries(updated);
     await cloud.save(`entries:${selected}:${mk}`, updated);
-    setForm({ date: todayISO(), dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+    setForm({ date: todayISO(), dum: "", kachra: "", charbi: "", machli: "", paya: "", photo: null });
   };
 
   const submitMonth = async () => {
@@ -987,6 +1052,7 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
                 </Field>
               ))}
             </div>
+            <PhotoUpload value={form.photo} onChange={(v) => setForm({ ...form, photo: v })} label="Register Page Photo (optional, for backup/proof)" />
             <Btn onClick={addEntry} style={{ width: "100%", marginTop: 4 }}>Save Entry</Btn>
           </Card>
 
@@ -1013,6 +1079,7 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
                     <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
                       <th style={{ padding: 6 }}>Date</th>
                       {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
+                      <th style={{ padding: 6 }}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1020,6 +1087,7 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
                       <tr key={idx} style={{ borderTop: `1px solid ${COLORS.line}` }}>
                         <td style={{ padding: 6 }}>{fmtDate(e.date)}</td>
                         {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 6 }}>{e[k]}</td>)}
+                        <td style={{ padding: 6 }}>{e.photo && <img src={e.photo} alt="proof" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4 }} />}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1591,6 +1659,14 @@ function OwnerRates({ cloud }) {
     await cloud.save(`prevbl:${selected}:${mk}`, prevBL);
   };
 
+  const deleteBill = async () => {
+    const empty = { dum: "", kachra: "", charbi: "", machli: "", paya: "" };
+    setRates(empty);
+    setPrevBL("");
+    await cloud.save(`rates:${selected}:${mk}`, empty);
+    await cloud.save(`prevbl:${selected}:${mk}`, "");
+  };
+
   const toggleAutoMinus = async () => {
     const next = !autoMinus;
     setAutoMinus(next);
@@ -1604,6 +1680,12 @@ function OwnerRates({ cloud }) {
     setAdvance(updated);
     await cloud.save(`advance:${selected}`, updated);
     setAdvForm({ date: todayISO(), amount: "", note: "" });
+  };
+
+  const deleteAdvance = async (id) => {
+    const updated = advance.filter((a) => a.id !== id);
+    setAdvance(updated);
+    await cloud.save(`advance:${selected}`, updated);
   };
 
   const dukandar = dukandars.find((d) => d.id === selected);
@@ -1637,6 +1719,9 @@ function OwnerRates({ cloud }) {
               <input type="number" style={inputStyle} value={prevBL} onChange={(e) => setPrevBL(e.target.value)} placeholder="0" />
             </Field>
             <Btn onClick={saveRates}>Save Rates &amp; Bill</Btn>
+            {(rates.dum || rates.kachra || rates.charbi || rates.machli || rates.paya || prevBL) && (
+              <Btn variant="danger" onClick={deleteBill} style={{ marginLeft: 10 }}>Delete This Bill</Btn>
+            )}
           </Card>
 
           <Card style={{ marginBottom: 16 }}>
@@ -1707,9 +1792,12 @@ function OwnerRates({ cloud }) {
                 <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No advance record.</div>
               ) : (
                 advance.map((a) => (
-                  <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${COLORS.line}`, fontSize: 13.5 }}>
+                  <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: `1px solid ${COLORS.line}`, fontSize: 13.5 }}>
                     <span>{fmtDate(a.date)} {a.note && `· ${a.note}`}</span>
-                    <span style={{ fontWeight: 700 }}>{money(a.amount)}</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontWeight: 700 }}>{money(a.amount)}</span>
+                      <button onClick={() => deleteAdvance(a.id)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Delete</button>
+                    </span>
                   </div>
                 ))
               )}
@@ -1849,6 +1937,7 @@ function OwnerPastData({ cloud }) {
   const [dukandars, setDukandars] = useState([]);
   const [selected, setSelected] = useState(null);
   const [vals, setVals] = useState({ dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  const [photo, setPhoto] = useState(null);
   const [existing, setExisting] = useState(null);
   const [msg, setMsg] = useState("");
 
@@ -1874,6 +1963,7 @@ function OwnerPastData({ cloud }) {
           ? { dum: hist.dum, kachra: hist.kachra, charbi: hist.charbi, machli: hist.machli, paya: hist.paya }
           : { dum: "", kachra: "", charbi: "", machli: "", paya: "" }
       );
+      setPhoto(hist ? hist.photo || null : null);
     })();
   }, [selected, mk, cloud]);
 
@@ -1887,6 +1977,7 @@ function OwnerPastData({ cloud }) {
       charbi: Number(vals.charbi) || 0,
       machli: Number(vals.machli) || 0,
       paya: Number(vals.paya) || 0,
+      photo: photo || null,
       historical: true,
       enteredBy: "Owner (manual)",
     };
@@ -1938,8 +2029,194 @@ function OwnerPastData({ cloud }) {
             </Field>
           ))}
         </div>
+        <PhotoUpload value={photo} onChange={setPhoto} label="Old Register Page Photo (optional, whole month)" />
         <Btn onClick={save} style={{ marginTop: 6 }}>Save Old Data</Btn>
         {msg && <div style={{ marginTop: 10, fontSize: 13, color: COLORS.ok }}>{msg}</div>}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — MANAGE (workers, dukandars, assignment, password)
+--------------------------------------------------------- */
+/* ---------------------------------------------------------
+   OWNER — WHOLE BILL & ADVANCE (monthly, not day-wise)
+   + Investors list
+--------------------------------------------------------- */
+function OwnerBillRegister({ cloud }) {
+  const [mk, setMk] = useState(monthKey());
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [investors, setInvestors] = useState([]);
+  const [invForm, setInvForm] = useState({ name: "", amount: "", note: "" });
+  const [invPhoto, setInvPhoto] = useState(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+    const out = [];
+    for (const d of ds.filter((x) => !x.archived)) {
+      const entries = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+      const rates = await cloud.load(`rates:${d.id}:${mk}`, null);
+      const prevBL = Number(await cloud.load(`prevbl:${d.id}:${mk}`, "")) || 0;
+      const advance = (await cloud.load(`advance:${d.id}`, [])) || [];
+      const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
+      const photo = await cloud.load(`billphoto:${d.id}:${mk}`, null);
+      const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+      entries.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
+      const billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
+      const advanceTotal = sum(advance, (a) => a.amount);
+      const balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
+      if (billTotal === 0 && advanceTotal === 0 && prevBL === 0) continue;
+      out.push({ id: d.id, name: displayName(d), billTotal, advanceTotal, prevBL, balance, photo });
+    }
+    setRows(out);
+    const inv = (await cloud.load("meta:investors", [])) || [];
+    setInvestors(inv);
+    setLoading(false);
+  }, [cloud, mk]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const setRowPhoto = async (dukandarId, photo) => {
+    setRows((rs) => rs.map((r) => (r.id === dukandarId ? { ...r, photo } : r)));
+    await cloud.save(`billphoto:${dukandarId}:${mk}`, photo);
+  };
+
+  const addInvestor = async () => {
+    if (!invForm.name) return;
+    const rec = { id: uid("I"), name: invForm.name, amount: Number(invForm.amount) || 0, note: invForm.note, photo: invPhoto || null };
+    const updated = [rec, ...investors];
+    setInvestors(updated);
+    await cloud.save("meta:investors", updated);
+    setInvForm({ name: "", amount: "", note: "" });
+    setInvPhoto(null);
+  };
+
+  const deleteInvestor = async (id) => {
+    const updated = investors.filter((i) => i.id !== id);
+    setInvestors(updated);
+    await cloud.save("meta:investors", updated);
+  };
+
+  const grand = useMemo(() => {
+    return {
+      bill: sum(rows, (r) => r.billTotal),
+      advance: sum(rows, (r) => r.advanceTotal),
+      balance: sum(rows, (r) => r.balance),
+    };
+  }, [rows]);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 950, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>Whole Bill &amp; Advance</div>
+        <MonthPicker value={mk} onChange={setMk} />
+      </div>
+      <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 16 }}>
+        Whole-month summary per customer — bill given, advance, and balance. Not day-wise. A photo can be attached per customer as backup proof.
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        {loading ? (
+          <div style={{ color: COLORS.inkSoft }}>Loading…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>No bill or advance data found for this month yet.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
+                  <th style={{ padding: 8 }}>Customer</th>
+                  <th style={{ padding: 8 }}>Bill Given</th>
+                  <th style={{ padding: 8 }}>Advance</th>
+                  <th style={{ padding: 8 }}>Balance</th>
+                  <th style={{ padding: 8 }}>Photo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{r.name}</td>
+                    <td style={{ padding: 8 }}>{money(r.billTotal)}</td>
+                    <td style={{ padding: 8 }}>{money(r.advanceTotal)}</td>
+                    <td style={{ padding: 8, fontWeight: 700, color: COLORS.gold }}>{money(r.balance)}</td>
+                    <td style={{ padding: 8 }}>
+                      {r.photo ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <img src={r.photo} alt="bill" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} />
+                          <button onClick={() => setRowPhoto(r.id, null)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 11 }}>Remove</button>
+                        </div>
+                      ) : (
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          style={{ fontSize: 11, width: 110 }}
+                          onChange={async (e) => {
+                            const file = e.target.files && e.target.files[0];
+                            if (!file) return;
+                            const dataUrl = await compressImageFile(file);
+                            setRowPhoto(r.id, dataUrl);
+                          }}
+                        />
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: `2px solid ${COLORS.gold}`, fontWeight: 700 }}>
+                  <td style={{ padding: 8, color: COLORS.gold }}>GRAND TOTAL</td>
+                  <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.bill)}</td>
+                  <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.advance)}</td>
+                  <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.balance)}</td>
+                  <td />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Investors</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
+          <Field label="Investor Name">
+            <input style={inputStyle} value={invForm.name} onChange={(e) => setInvForm({ ...invForm, name: titleCase(e.target.value) })} />
+          </Field>
+          <Field label="Amount (Rs)">
+            <input type="number" style={inputStyle} value={invForm.amount} onChange={(e) => setInvForm({ ...invForm, amount: e.target.value })} placeholder="0" />
+          </Field>
+          <Field label="Note">
+            <input style={inputStyle} value={invForm.note} onChange={(e) => setInvForm({ ...invForm, note: e.target.value })} placeholder="optional" />
+          </Field>
+        </div>
+        <PhotoUpload value={invPhoto} onChange={setInvPhoto} label="Photo (optional)" />
+        <Btn variant="gold" onClick={addInvestor}>Add Investor</Btn>
+
+        <div style={{ marginTop: 14 }}>
+          {investors.length === 0 ? (
+            <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No investors added yet.</div>
+          ) : (
+            investors.map((inv) => (
+              <div key={inv.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${COLORS.line}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {inv.photo && <img src={inv.photo} alt="" style={{ width: 30, height: 30, objectFit: "cover", borderRadius: 6 }} />}
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13.5, color: COLORS.maroon }}>{inv.name}</div>
+                    {inv.note && <div style={{ fontSize: 12, color: COLORS.inkSoft }}>{inv.note}</div>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ fontWeight: 700 }}>{money(inv.amount)}</span>
+                  <button onClick={() => deleteInvestor(inv.id)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Delete</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </Card>
     </div>
   );
@@ -2293,6 +2570,7 @@ function OwnerDashboard({ session, cloud, tab, setTab }) {
     { key: "rates", label: "Rates & Bill" },
     { key: "salary", label: "Salary/Expenses" },
     { key: "past", label: "Old Data" },
+    { key: "billregister", label: "Whole Bill & Advance" },
     { key: "manage", label: "Manage" },
   ];
   return (
@@ -2305,6 +2583,7 @@ function OwnerDashboard({ session, cloud, tab, setTab }) {
       {tab === "rates" && <OwnerRates cloud={cloud} />}
       {tab === "salary" && <OwnerSalary cloud={cloud} />}
       {tab === "past" && <OwnerPastData cloud={cloud} />}
+      {tab === "billregister" && <OwnerBillRegister cloud={cloud} />}
       {tab === "manage" && <OwnerManage cloud={cloud} />}
     </>
   );
