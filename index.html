@@ -1436,8 +1436,12 @@ function FactoryPage({ cloud, canManageRate, session }) {
   const [mk, setMk] = useState(monthKey());
   const [rows, setRows] = useState([]);
   const [rate, setRate] = useState({ dum: "", kachra: "", charbi: "", machli: "", paya: "" });
-  const [form, setForm] = useState({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "" });
+  const [form, setForm] = useState({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "", photo: null });
+  const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState("daily"); // daily | old
+  const [oldForm, setOldForm] = useState({ factoryName: "", month: new Date().getMonth(), year: new Date().getFullYear(), vals: { dum: "", kachra: "", charbi: "", machli: "", paya: "" }, photo: null });
+  const [oldMsg, setOldMsg] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -1446,8 +1450,15 @@ function FactoryPage({ cloud, canManageRate, session }) {
       setRows(r.sort((a, b) => (a.date < b.date ? 1 : -1)));
       const rt = await cloud.load(`factoryRate:${mk}`, null);
       setRate(rt || { dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+      const cs = (await cloud.load("meta:companies", [])) || [];
+      setCompanies(cs.filter((c) => !c.archived));
+      if (cs.length && !form.factoryName) {
+        setForm((f) => ({ ...f, factoryName: cs[0].name }));
+        setOldForm((f) => ({ ...f, factoryName: cs[0].name }));
+      }
       setLoading(false);
     })();
+    // eslint-disable-next-line
   }, [mk, cloud]);
 
   const addRow = async () => {
@@ -1458,12 +1469,13 @@ function FactoryPage({ cloud, canManageRate, session }) {
       factoryName: form.factoryName,
       item: form.item,
       qty: Number(form.qty),
+      photo: form.photo || null,
       enteredBy: session?.name || "Owner",
     };
     const updated = [rec, ...rows];
     setRows(updated);
     await cloud.save(`factory:${mk}`, updated);
-    setForm({ date: todayISO(), factoryName: "", item: ITEMS[0], qty: "" });
+    setForm({ ...form, qty: "", photo: null });
   };
 
   const removeRow = async (id) => {
@@ -1474,6 +1486,29 @@ function FactoryPage({ cloud, canManageRate, session }) {
 
   const saveRate = async () => {
     await cloud.save(`factoryRate:${mk}`, rate);
+  };
+
+  const saveOldData = async () => {
+    if (!oldForm.factoryName) return;
+    setOldMsg("");
+    const omk = `${oldForm.year}-${String(oldForm.month + 1).padStart(2, "0")}`;
+    const existing = (await cloud.load(`factory:${omk}`, [])) || [];
+    const withoutOldForThisCompany = existing.filter((r) => !(r.historical && r.factoryName === oldForm.factoryName));
+    const newRows = ITEM_KEYS.map((k, i) => ({
+      id: uid("F"),
+      date: `${omk}-01`,
+      factoryName: oldForm.factoryName,
+      item: ITEMS[i],
+      qty: Number(oldForm.vals[k]) || 0,
+      photo: i === 0 ? oldForm.photo || null : null,
+      historical: true,
+      enteredBy: session?.name || "Owner",
+    })).filter((r) => r.qty > 0);
+    const updated = [...newRows, ...withoutOldForThisCompany];
+    await cloud.save(`factory:${omk}`, updated);
+    if (omk === mk) setRows(updated.sort((a, b) => (a.date < b.date ? 1 : -1)));
+    setOldMsg(`Saved for ${monthLabel(omk)}.`);
+    setOldForm({ ...oldForm, vals: { dum: "", kachra: "", charbi: "", machli: "", paya: "" }, photo: null });
   };
 
   // item-wise totals (qty), and amount computed from monthly rate,
@@ -1493,103 +1528,162 @@ function FactoryPage({ cloud, canManageRate, session }) {
   const grandTotal = useMemo(() => {
     return ITEM_KEYS.reduce((acc, k) => {
       const rt = Number(rate[k]) || 0;
-      // Rows that carry their own legacy amount are counted as-is;
-      // rows without one use qty * this month's rate.
       const legacyQty = rows.filter((r) => ITEM_KEYS[ITEMS.indexOf(r.item)] === k && r.amount !== undefined).reduce((a, r) => a + (Number(r.qty) || 0), 0);
       const newQty = itemTotals[k].qty - legacyQty;
       return acc + itemTotals[k].legacyAmount + newQty * rt;
     }, 0);
   }, [rate, itemTotals, rows]);
 
+  const yearOptions = useMemo(() => {
+    const now = new Date().getFullYear();
+    return [now, now - 1, now - 2, now - 3, now - 4, now - 5];
+  }, []);
+  const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
   return (
     <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon }}>Factory Sales</div>
-        <MonthPicker value={mk} onChange={setMk} />
+        {mode === "daily" && <MonthPicker value={mk} onChange={setMk} />}
       </div>
 
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Record</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
-          <Field label="Date"><input type="date" style={inputStyle} value={form.date} max={todayISO()} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
-          <Field label="Factory Name"><input style={inputStyle} value={form.factoryName} onChange={(e) => setForm({ ...form, factoryName: titleCase(e.target.value) })} placeholder="e.g. Al-Madina Factory" /></Field>
-          <Field label="Item">
-            <select style={inputStyle} value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })}>
-              {ITEMS.map((i) => <option key={i} value={i}>{i}</option>)}
-            </select>
-          </Field>
-          <Field label="Qty (kg)"><input type="number" style={inputStyle} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></Field>
-        </div>
-        <Btn onClick={addRow} style={{ marginTop: 6 }}>Add</Btn>
-      </Card>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button onClick={() => setMode("daily")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${COLORS.line}`, background: mode === "daily" ? COLORS.red : "#fff", color: mode === "daily" ? "#fff" : COLORS.maroon, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Daily Entry</button>
+        <button onClick={() => setMode("old")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${COLORS.line}`, background: mode === "old" ? COLORS.red : "#fff", color: mode === "old" ? "#fff" : COLORS.maroon, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Old Data (Whole Month)</button>
+      </div>
 
-      {canManageRate && (
+      {companies.length === 0 && (
         <Card style={{ marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>This Month's Rate (per kg)</div>
-          <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 10 }}>One rate per item for the whole month — whatever the factory pays.</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 10 }}>
-            {ITEM_KEYS.map((k, i) => (
-              <Field key={k} label={ITEMS[i]}>
-                <input type="number" style={inputStyle} value={rate[k]} onChange={(e) => setRate({ ...rate, [k]: e.target.value })} placeholder="0" />
-              </Field>
-            ))}
-          </div>
-          <Btn variant="gold" onClick={saveRate} style={{ marginTop: 4 }}>Save Rate</Btn>
+          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>No company added yet. Ask the Owner to add one from Manage → Add Company.</div>
         </Card>
       )}
 
-      <Card>
-        {loading ? (
-          <div style={{ color: COLORS.inkSoft }}>Loading…</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-              <thead>
-                <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
-                  <th style={{ padding: 6 }}>Date</th><th style={{ padding: 6 }}>Factory</th><th style={{ padding: 6 }}>Item</th>
-                  <th style={{ padding: 6 }}>Qty</th><th />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
-                    <td style={{ padding: 6 }}>{fmtDate(r.date)}</td>
-                    <td style={{ padding: 6, fontWeight: 600 }}>{r.factoryName}</td>
-                    <td style={{ padding: 6 }}>{r.item}</td>
-                    <td style={{ padding: 6 }}>{r.qty}</td>
-                    <td style={{ padding: 6 }}><button onClick={() => removeRow(r.id)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 12 }}>Remove</button></td>
-                  </tr>
-                ))}
-                {rows.length === 0 && <tr><td colSpan={5} style={{ padding: 12, color: COLORS.inkSoft }}>No records.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+      {mode === "daily" ? (
+        <>
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Record</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
+              <Field label="Date"><input type="date" style={inputStyle} value={form.date} max={todayISO()} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+              <Field label="Company">
+                <select style={inputStyle} value={form.factoryName} onChange={(e) => setForm({ ...form, factoryName: e.target.value })}>
+                  {companies.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Item">
+                <select style={inputStyle} value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })}>
+                  {ITEMS.map((i) => <option key={i} value={i}>{i}</option>)}
+                </select>
+              </Field>
+              <Field label="Qty (kg)"><input type="number" style={inputStyle} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></Field>
+            </div>
+            <PhotoUpload value={form.photo} onChange={(v) => setForm({ ...form, photo: v })} label="Photo (optional, for backup/proof)" />
+            <Btn onClick={addRow} style={{ marginTop: 6 }}>Add</Btn>
+          </Card>
 
-      {canManageRate && rows.length > 0 && (
-        <Card style={{ marginTop: 16 }}>
-          <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Item-wise Total</div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-              <thead>
-                <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
-                  <th style={{ padding: 6 }}>Item</th><th style={{ padding: 6 }}>Total Qty (kg)</th>
-                </tr>
-              </thead>
-              <tbody>
+          {canManageRate && (
+            <Card style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>This Month's Rate (per kg)</div>
+              <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 10 }}>One rate per item for the whole month — whatever the factory pays.</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 10 }}>
                 {ITEM_KEYS.map((k, i) => (
-                  <tr key={k} style={{ borderTop: `1px solid ${COLORS.line}` }}>
-                    <td style={{ padding: 6, fontWeight: 600 }}>{ITEMS[i]}</td>
-                    <td style={{ padding: 6 }}>{itemTotals[k].qty}</td>
-                  </tr>
+                  <Field key={k} label={ITEMS[i]}>
+                    <input type="number" style={inputStyle} value={rate[k]} onChange={(e) => setRate({ ...rate, [k]: e.target.value })} placeholder="0" />
+                  </Field>
                 ))}
-              </tbody>
-            </table>
+              </div>
+              <Btn variant="gold" onClick={saveRate} style={{ marginTop: 4 }}>Save Rate</Btn>
+            </Card>
+          )}
+
+          <Card>
+            {loading ? (
+              <div style={{ color: COLORS.inkSoft }}>Loading…</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                      <th style={{ padding: 6 }}>Date</th><th style={{ padding: 6 }}>Company</th><th style={{ padding: 6 }}>Item</th>
+                      <th style={{ padding: 6 }}>Qty</th><th style={{ padding: 6 }}>By</th><th /><th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => (
+                      <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                        <td style={{ padding: 6 }}>{fmtDate(r.date)}</td>
+                        <td style={{ padding: 6, fontWeight: 600 }}>{r.factoryName}</td>
+                        <td style={{ padding: 6 }}>{r.item}</td>
+                        <td style={{ padding: 6 }}>{r.qty}</td>
+                        <td style={{ padding: 6, fontSize: 12, color: COLORS.inkSoft }}>{r.enteredBy}</td>
+                        <td style={{ padding: 6 }}>{r.photo && <img src={r.photo} alt="" style={{ width: 26, height: 26, objectFit: "cover", borderRadius: 4 }} />}</td>
+                        <td style={{ padding: 6 }}><button onClick={() => removeRow(r.id)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 12 }}>Remove</button></td>
+                      </tr>
+                    ))}
+                    {rows.length === 0 && <tr><td colSpan={7} style={{ padding: 12, color: COLORS.inkSoft }}>No records.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          {canManageRate && rows.length > 0 && (
+            <Card style={{ marginTop: 16 }}>
+              <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Item-wise Total</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: COLORS.inkSoft }}>
+                      <th style={{ padding: 6 }}>Item</th><th style={{ padding: 6 }}>Total Qty (kg)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ITEM_KEYS.map((k, i) => (
+                      <tr key={k} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                        <td style={{ padding: 6, fontWeight: 600 }}>{ITEMS[i]}</td>
+                        <td style={{ padding: 6 }}>{itemTotals[k].qty}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ marginTop: 10, textAlign: "right", fontWeight: 700, color: COLORS.gold, fontSize: 15 }}>
+                Grand Total: {money(grandTotal)}
+              </div>
+            </Card>
+          )}
+        </>
+      ) : (
+        <Card>
+          <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Add Old Data — Whole Month</div>
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>Enter the whole month's total for a company in one go — no need to type day by day.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 4 }}>
+            <Field label="Company">
+              <select style={inputStyle} value={oldForm.factoryName} onChange={(e) => setOldForm({ ...oldForm, factoryName: e.target.value })}>
+                {companies.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Month">
+              <select style={inputStyle} value={oldForm.month} onChange={(e) => setOldForm({ ...oldForm, month: Number(e.target.value) })}>
+                {monthNames.map((m, i) => <option key={m} value={i}>{m}</option>)}
+              </select>
+            </Field>
+            <Field label="Year">
+              <select style={inputStyle} value={oldForm.year} onChange={(e) => setOldForm({ ...oldForm, year: Number(e.target.value) })}>
+                {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </Field>
           </div>
-          <div style={{ marginTop: 10, textAlign: "right", fontWeight: 700, color: COLORS.gold, fontSize: 15 }}>
-            Grand Total: {money(grandTotal)}
+          <div style={{ fontWeight: 700, marginBottom: 8, color: COLORS.maroon }}>{oldForm.factoryName} — {monthNames[oldForm.month]} {oldForm.year} Total (kg)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 10 }}>
+            {ITEM_KEYS.map((k, i) => (
+              <Field key={k} label={ITEMS[i]}>
+                <input type="number" style={inputStyle} value={oldForm.vals[k]} onChange={(e) => setOldForm({ ...oldForm, vals: { ...oldForm.vals, [k]: e.target.value } })} placeholder="0" />
+              </Field>
+            ))}
           </div>
+          <PhotoUpload value={oldForm.photo} onChange={(v) => setOldForm({ ...oldForm, photo: v })} label="Old Register Page Photo (optional)" />
+          <Btn onClick={saveOldData}>Save Old Data</Btn>
+          {oldMsg && <div style={{ marginTop: 10, fontSize: 13, color: COLORS.ok }}>{oldMsg}</div>}
         </Card>
       )}
     </div>
@@ -2051,6 +2145,34 @@ function OwnerBillRegister({ cloud }) {
   const [investors, setInvestors] = useState([]);
   const [invForm, setInvForm] = useState({ name: "", amount: "", note: "" });
   const [invPhoto, setInvPhoto] = useState(null);
+  const [dukandars, setDukandars] = useState([]);
+  const [oldForm, setOldForm] = useState({ dukandarId: "", month: new Date().getMonth(), year: new Date().getFullYear(), billGiven: "", advance: "", balance: "", photo: null });
+  const [oldMsg, setOldMsg] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      setDukandars(ds);
+      if (ds.length && !oldForm.dukandarId) setOldForm((f) => ({ ...f, dukandarId: ds[0].id }));
+    })();
+    // eslint-disable-next-line
+  }, [cloud]);
+
+  const saveOldBill = async () => {
+    if (!oldForm.dukandarId) return;
+    setOldMsg("");
+    const omk = `${oldForm.year}-${String(oldForm.month + 1).padStart(2, "0")}`;
+    const rec = {
+      billGiven: Number(oldForm.billGiven) || 0,
+      advance: Number(oldForm.advance) || 0,
+      balance: Number(oldForm.balance) || 0,
+      photo: oldForm.photo || null,
+    };
+    await cloud.save(`oldbill:${oldForm.dukandarId}:${omk}`, rec);
+    if (omk === mk) refresh();
+    setOldMsg(`Saved for ${monthLabel(omk)}.`);
+    setOldForm({ ...oldForm, billGiven: "", advance: "", balance: "", photo: null });
+  };
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -2063,13 +2185,21 @@ function OwnerBillRegister({ cloud }) {
       const advance = (await cloud.load(`advance:${d.id}`, [])) || [];
       const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
       const photo = await cloud.load(`billphoto:${d.id}:${mk}`, null);
+      const oldBill = await cloud.load(`oldbill:${d.id}:${mk}`, null);
       const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
       entries.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
-      const billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
-      const advanceTotal = sum(advance, (a) => a.amount);
-      const balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
+      let billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
+      let advanceTotal = sum(advance, (a) => a.amount);
+      let balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
+      let isOld = false;
+      if (oldBill) {
+        billTotal = Number(oldBill.billGiven) || 0;
+        advanceTotal = Number(oldBill.advance) || 0;
+        balance = Number(oldBill.balance) || 0;
+        isOld = true;
+      }
       if (billTotal === 0 && advanceTotal === 0 && prevBL === 0) continue;
-      out.push({ id: d.id, name: displayName(d), billTotal, advanceTotal, prevBL, balance, photo });
+      out.push({ id: d.id, name: displayName(d), billTotal, advanceTotal, prevBL, balance, photo: oldBill?.photo || photo, isOld });
     }
     setRows(out);
     const inv = (await cloud.load("meta:investors", [])) || [];
@@ -2138,7 +2268,7 @@ function OwnerBillRegister({ cloud }) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
-                    <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{r.name}</td>
+                    <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{r.name} {r.isOld && <span style={{ fontSize: 10.5, color: COLORS.warn, fontWeight: 600 }}>(Old Data)</span>}</td>
                     <td style={{ padding: 8 }}>{money(r.billTotal)}</td>
                     <td style={{ padding: 8 }}>{money(r.advanceTotal)}</td>
                     <td style={{ padding: 8, fontWeight: 700, color: COLORS.gold }}>{money(r.balance)}</td>
@@ -2178,6 +2308,34 @@ function OwnerBillRegister({ cloud }) {
             </table>
           </div>
         )}
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Add Old Data (Bill &amp; Advance)</div>
+        <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>For a past month where you only know the totals — enter Bill Given, Advance, and Balance directly, no daily entries needed.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
+          <Field label="Customer">
+            <select style={inputStyle} value={oldForm.dukandarId} onChange={(e) => setOldForm({ ...oldForm, dukandarId: e.target.value })}>
+              {dukandars.map((d) => <option key={d.id} value={d.id}>{displayName(d)}</option>)}
+            </select>
+          </Field>
+          <Field label="Month">
+            <select style={inputStyle} value={oldForm.month} onChange={(e) => setOldForm({ ...oldForm, month: Number(e.target.value) })}>
+              {["January","February","March","April","May","June","July","August","September","October","November","December"].map((m, i) => <option key={m} value={i}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="Year">
+            <select style={inputStyle} value={oldForm.year} onChange={(e) => setOldForm({ ...oldForm, year: Number(e.target.value) })}>
+              {[0,1,2,3,4,5].map((n) => { const y = new Date().getFullYear() - n; return <option key={y} value={y}>{y}</option>; })}
+            </select>
+          </Field>
+          <Field label="Bill Given (Rs)"><input type="number" style={inputStyle} value={oldForm.billGiven} onChange={(e) => setOldForm({ ...oldForm, billGiven: e.target.value })} placeholder="0" /></Field>
+          <Field label="Advance (Rs)"><input type="number" style={inputStyle} value={oldForm.advance} onChange={(e) => setOldForm({ ...oldForm, advance: e.target.value })} placeholder="0" /></Field>
+          <Field label="Balance (Rs)"><input type="number" style={inputStyle} value={oldForm.balance} onChange={(e) => setOldForm({ ...oldForm, balance: e.target.value })} placeholder="0" /></Field>
+        </div>
+        <PhotoUpload value={oldForm.photo} onChange={(v) => setOldForm({ ...oldForm, photo: v })} label="Old Bill Photo (optional)" />
+        <Btn onClick={saveOldBill}>Save Old Data</Btn>
+        {oldMsg && <div style={{ marginTop: 10, fontSize: 13, color: COLORS.ok }}>{oldMsg}</div>}
       </Card>
 
       <Card>
@@ -2223,6 +2381,266 @@ function OwnerBillRegister({ cloud }) {
 }
 
 /* ---------------------------------------------------------
+   OWNER — COMPANY REGISTER (names list -> monthly totals)
+--------------------------------------------------------- */
+function CompanyMonthlyRegister({ cloud, companyName, monthsBack = 24 }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!companyName) return;
+    (async () => {
+      setLoading(true);
+      const months = pastMonths(monthsBack);
+      const out = [];
+      for (const mk of months) {
+        const f = (await cloud.load(`factory:${mk}`, [])) || [];
+        const mine = f.filter((r) => r.factoryName === companyName);
+        if (mine.length === 0) continue;
+        const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+        const byWorker = {};
+        mine.forEach((r) => {
+          const key = ITEM_KEYS[ITEMS.indexOf(r.item)];
+          if (key) t[key] += Number(r.qty) || 0;
+          const w = r.enteredBy || "Unknown";
+          byWorker[w] = (byWorker[w] || 0) + (Number(r.qty) || 0);
+        });
+        const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
+        if (isAllZero) continue;
+        out.push({ mk, ...t, byWorker });
+      }
+      setRows(out);
+      setLoading(false);
+    })();
+  }, [companyName, cloud, monthsBack]);
+
+  if (loading) return <div style={{ color: COLORS.inkSoft, padding: 10 }}>Loading…</div>;
+
+  return (
+    <Card>
+      <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Register — Total for Each Month</div>
+      {rows.length === 0 ? (
+        <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>No monthly data found yet.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
+                <th style={{ padding: 8 }}>Month</th>
+                {ITEMS.map((i) => <th key={i} style={{ padding: 8 }}>{i} (kg)</th>)}
+                <th style={{ padding: 8 }}>By Worker</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.mk} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                  <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{monthLabel(r.mk)}</td>
+                  {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 8 }}>{r[k]}</td>)}
+                  <td style={{ padding: 8, fontSize: 12.5, color: COLORS.inkSoft }}>
+                    {Object.entries(r.byWorker).map(([w, q]) => `${w}: ${q}kg`).join(", ")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function OwnerCompanyRegister({ cloud }) {
+  const [companies, setCompanies] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setCompanies((await cloud.load("meta:companies", [])) || []);
+      setLoading(false);
+    })();
+  }, [cloud]);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 800, margin: "0 auto" }}>
+      <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon, marginBottom: 6 }}>Company Register</div>
+      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 16 }}>Click a company to see the total for each month, and which worker delivered how much.</div>
+
+      {selected ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: COLORS.maroon }}>{selected}</div>
+            <Btn variant="ghost" onClick={() => setSelected(null)}>← All Companies</Btn>
+          </div>
+          <CompanyMonthlyRegister cloud={cloud} companyName={selected} />
+        </>
+      ) : (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          {loading ? (
+            <div style={{ padding: 16, color: COLORS.inkSoft }}>Loading…</div>
+          ) : companies.length === 0 ? (
+            <div style={{ padding: 16, color: COLORS.inkSoft }}>No companies added yet. Add one from Manage → Add Company.</div>
+          ) : (
+            companies.map((c, idx) => (
+              <button
+                key={c.id}
+                onClick={() => setSelected(c.name)}
+                style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
+                  textAlign: "left", padding: "13px 16px", border: "none",
+                  borderTop: idx === 0 ? "none" : `1px solid ${COLORS.line}`,
+                  background: c.archived ? "#FBF6EC" : "#fff", cursor: "pointer",
+                }}
+              >
+                <div style={{ fontWeight: 700, color: COLORS.maroon, fontSize: 14.5 }}>
+                  {c.name} {c.archived && <span style={{ fontSize: 11, color: COLORS.warn, fontWeight: 600 }}>(Archived)</span>}
+                </div>
+              </button>
+            ))
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   OWNER — WORKER REGISTER (a worker's customer + company entries)
+--------------------------------------------------------- */
+function WorkerMonthlyOverview({ cloud, worker }) {
+  const [customers, setCustomers] = useState([]);
+  const [companyRows, setCompanyRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const allDukandars = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      const mine = allDukandars.filter((d) => d.workerId === worker.id);
+      setCustomers(mine);
+
+      const months = pastMonths(12);
+      const compOut = [];
+      for (const mk of months) {
+        const f = (await cloud.load(`factory:${mk}`, [])) || [];
+        const mine2 = f.filter((r) => r.enteredBy === worker.name);
+        if (mine2.length === 0) continue;
+        const byCompany = {};
+        mine2.forEach((r) => {
+          byCompany[r.factoryName] = (byCompany[r.factoryName] || 0) + (Number(r.qty) || 0);
+        });
+        compOut.push({ mk, byCompany });
+      }
+      setCompanyRows(compOut);
+      setLoading(false);
+    })();
+  }, [worker, cloud]);
+
+  if (loading) return <div style={{ color: COLORS.inkSoft, padding: 10 }}>Loading…</div>;
+
+  return (
+    <>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Assigned Customers</div>
+        {customers.length === 0 ? (
+          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>No customers assigned to this worker.</div>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {customers.map((c) => (
+              <span key={c.id} style={{ background: "#F6EEDD", padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, color: COLORS.maroon }}>
+                {displayName(c)}
+              </span>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Company Deliveries — by Month</div>
+        {companyRows.length === 0 ? (
+          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>No company delivery records found for this worker.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
+                  <th style={{ padding: 8 }}>Month</th><th style={{ padding: 8 }}>Company — Qty (kg)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {companyRows.map((r) => (
+                  <tr key={r.mk} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{monthLabel(r.mk)}</td>
+                    <td style={{ padding: 8 }}>{Object.entries(r.byCompany).map(([c, q]) => `${c}: ${q}kg`).join(", ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}
+
+function OwnerWorkerRegister({ cloud }) {
+  const [workers, setWorkers] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setWorkers((await cloud.load("meta:workers", [])) || []);
+      setLoading(false);
+    })();
+  }, [cloud]);
+
+  const selWorker = workers.find((w) => w.id === selected);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 850, margin: "0 auto" }}>
+      <div style={{ fontWeight: 700, fontSize: 17, color: COLORS.maroon, marginBottom: 6 }}>Worker Register</div>
+      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 16 }}>Click a worker to see their assigned customers and company deliveries.</div>
+
+      {selected ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: COLORS.maroon }}>{displayName(selWorker)}</div>
+            <Btn variant="ghost" onClick={() => setSelected(null)}>← All Workers</Btn>
+          </div>
+          <WorkerMonthlyOverview cloud={cloud} worker={selWorker} />
+        </>
+      ) : (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          {loading ? (
+            <div style={{ padding: 16, color: COLORS.inkSoft }}>Loading…</div>
+          ) : workers.length === 0 ? (
+            <div style={{ padding: 16, color: COLORS.inkSoft }}>No workers added yet.</div>
+          ) : (
+            workers.map((w, idx) => (
+              <button
+                key={w.id}
+                onClick={() => setSelected(w.id)}
+                style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
+                  textAlign: "left", padding: "13px 16px", border: "none",
+                  borderTop: idx === 0 ? "none" : `1px solid ${COLORS.line}`, background: "#fff", cursor: "pointer",
+                }}
+              >
+                <div style={{ fontWeight: 700, color: COLORS.maroon, fontSize: 14.5 }}>{displayName(w)}</div>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: COLORS.gold, background: "#F6EEDD", padding: "4px 10px", borderRadius: 999 }}>{w.code}</div>
+              </button>
+            ))
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
    OWNER — MANAGE (workers, dukandars, assignment, password)
 --------------------------------------------------------- */
 function OwnerManage({ cloud }) {
@@ -2248,15 +2666,33 @@ function OwnerManage({ cloud }) {
   const nextCode = useMemo(() => nextCustomerCode(dukandars), [dukandars]);
   const pinTaken = (pin, exceptId) =>
     dukandars.some((d) => d.id !== exceptId && (d.pin || "").toUpperCase() === pin.toUpperCase());
+  const [companies, setCompanies] = useState([]);
+  const [companyForm, setCompanyForm] = useState({ name: "" });
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setWorkers((await cloud.load("meta:workers", [])) || []);
     setDukandars(sortCustomers((await cloud.load("meta:dukandars", [])) || []));
+    setCompanies((await cloud.load("meta:companies", [])) || []);
     setLoading(false);
   }, [cloud]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  const addCompany = async () => {
+    if (!companyForm.name) return;
+    const rec = { id: uid("C"), name: companyForm.name, archived: false };
+    const updated = [...companies, rec];
+    setCompanies(updated);
+    await cloud.save("meta:companies", updated);
+    setCompanyForm({ name: "" });
+  };
+
+  const toggleArchiveCompany = async (id) => {
+    const updated = companies.map((c) => (c.id === id ? { ...c, archived: !c.archived } : c));
+    setCompanies(updated);
+    await cloud.save("meta:companies", updated);
+  };
 
   const addWorker = async () => {
     if (!wForm.name || !wForm.code) return;
@@ -2546,6 +2982,25 @@ function OwnerManage({ cloud }) {
       </Card>
 
       <Card>
+        <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Add Company (Factory)</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <input style={{ ...inputStyle, flex: 1, minWidth: 160 }} value={companyForm.name} onChange={(e) => setCompanyForm({ name: titleCase(e.target.value) })} placeholder="e.g. Al-Madina Factory" />
+          <Btn onClick={addCompany}>Add Company</Btn>
+        </div>
+        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {companies.map((c) => (
+            <span key={c.id} style={{ display: "inline-flex", alignItems: "center", gap: 8, background: c.archived ? "#FBF6EC" : "#F6EEDD", padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, color: COLORS.maroon }}>
+              {c.name} {c.archived && <span style={{ fontSize: 11, color: COLORS.warn }}>(Archived)</span>}
+              <button onClick={() => toggleArchiveCompany(c.id)} style={{ border: "none", background: "none", color: c.archived ? COLORS.ok : "#A63131", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                {c.archived ? "Restore" : "Archive"}
+              </button>
+            </span>
+          ))}
+          {companies.length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No companies added yet.</div>}
+        </div>
+      </Card>
+
+      <Card>
         <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Change Owner Password</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
           <Field label="Current Password"><input type="password" style={inputStyle} value={pwdForm.current} onChange={(e) => setPwdForm({ ...pwdForm, current: e.target.value })} /></Field>
@@ -2571,6 +3026,8 @@ function OwnerDashboard({ session, cloud, tab, setTab }) {
     { key: "salary", label: "Salary/Expenses" },
     { key: "past", label: "Old Data" },
     { key: "billregister", label: "Whole Bill & Advance" },
+    { key: "companyregister", label: "Company Register" },
+    { key: "workerregister", label: "Worker Register" },
     { key: "manage", label: "Manage" },
   ];
   return (
@@ -2584,6 +3041,8 @@ function OwnerDashboard({ session, cloud, tab, setTab }) {
       {tab === "salary" && <OwnerSalary cloud={cloud} />}
       {tab === "past" && <OwnerPastData cloud={cloud} />}
       {tab === "billregister" && <OwnerBillRegister cloud={cloud} />}
+      {tab === "companyregister" && <OwnerCompanyRegister cloud={cloud} />}
+      {tab === "workerregister" && <OwnerWorkerRegister cloud={cloud} />}
       {tab === "manage" && <OwnerManage cloud={cloud} />}
     </>
   );
