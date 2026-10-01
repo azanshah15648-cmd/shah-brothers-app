@@ -845,7 +845,8 @@ function MonthlyRegister({ cloud, dukandarId, monthsBack = 24 }) {
         e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
         const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
         if (isAllZero) continue;
-        out.push({ mk, ...t });
+        const photo = (e.find((rec) => rec.photo) || {}).photo || null;
+        out.push({ mk, ...t, photo });
       }
       setRows(out);
       setLoading(false);
@@ -866,6 +867,7 @@ function MonthlyRegister({ cloud, dukandarId, monthsBack = 24 }) {
               <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
                 <th style={{ padding: 8 }}>Month</th>
                 {ITEMS.map((i) => <th key={i} style={{ padding: 8 }}>{i} (kg)</th>)}
+                <th style={{ padding: 8 }}>Photo</th>
               </tr>
             </thead>
             <tbody>
@@ -873,6 +875,7 @@ function MonthlyRegister({ cloud, dukandarId, monthsBack = 24 }) {
                 <tr key={r.mk} style={{ borderTop: `1px solid ${COLORS.line}` }}>
                   <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{monthLabel(r.mk)}</td>
                   {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 8 }}>{r[k]}</td>)}
+                  <td style={{ padding: 8 }}>{r.photo && <img src={r.photo} alt="" style={{ width: 30, height: 30, objectFit: "cover", borderRadius: 4 }} />}</td>
                 </tr>
               ))}
             </tbody>
@@ -1236,6 +1239,8 @@ function OwnerLive({ cloud }) {
                   <th style={{ padding: 6 }}>Date</th>
                   <th style={{ padding: 6 }}>Customer</th>
                   {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
+                  <th style={{ padding: 6 }}>By</th>
+                  <th style={{ padding: 6 }}>Photo</th>
                 </tr>
               </thead>
               <tbody>
@@ -1244,6 +1249,8 @@ function OwnerLive({ cloud }) {
                     <td style={{ padding: 6 }}>{fmtDate(e.date)}</td>
                     <td style={{ padding: 6, fontWeight: 600 }}>{e.dukandarName}</td>
                     {ITEM_KEYS.map((k) => <td key={k} style={{ padding: 6 }}>{e[k]}</td>)}
+                    <td style={{ padding: 6, fontSize: 12, color: COLORS.inkSoft }}>{e.enteredBy || ""}</td>
+                    <td style={{ padding: 6 }}>{e.photo && <img src={e.photo} alt="" style={{ width: 26, height: 26, objectFit: "cover", borderRadius: 4 }} />}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2160,6 +2167,7 @@ function OwnerRegisterPage({ cloud }) {
       const advance = (await cloud.load(`advance:${d.id}`, [])) || [];
       const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
       const oldBill = await cloud.load(`oldbill:${d.id}:${mk}`, null);
+      const billphoto = await cloud.load(`billphoto:${d.id}:${mk}`, null);
       const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
       entries.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
       let billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
@@ -2171,7 +2179,7 @@ function OwnerRegisterPage({ cloud }) {
         balance = Number(oldBill.balance) || 0;
       }
       if (billTotal === 0 && advanceTotal === 0 && prevBL === 0) continue;
-      out.push({ sr: sr++, id: d.id, name: displayName(d), phone: d.phone || "", billTotal, advanceTotal, balance });
+      out.push({ sr: sr++, id: d.id, name: displayName(d), phone: d.phone || "", billTotal, advanceTotal, balance, photo: oldBill?.photo || billphoto });
     }
     setRows(out);
     setLoading(false);
@@ -2212,6 +2220,7 @@ function OwnerRegisterPage({ cloud }) {
                     <th style={{ padding: 8 }}>Bill</th>
                     <th style={{ padding: 8 }}>Advance</th>
                     <th style={{ padding: 8 }}>Balance</th>
+                    <th style={{ padding: 8 }}>Photo</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2222,6 +2231,7 @@ function OwnerRegisterPage({ cloud }) {
                       <td style={{ padding: 8 }}>{money(r.billTotal)}</td>
                       <td style={{ padding: 8 }}>{money(r.advanceTotal)}</td>
                       <td style={{ padding: 8, fontWeight: 700, color: COLORS.gold }}>{money(r.balance)}</td>
+                      <td style={{ padding: 8 }}>{r.photo && <img src={r.photo} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4 }} />}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2231,6 +2241,7 @@ function OwnerRegisterPage({ cloud }) {
                     <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.bill)}</td>
                     <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.advance)}</td>
                     <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.balance)}</td>
+                    <td />
                   </tr>
                 </tfoot>
               </table>
@@ -2582,7 +2593,8 @@ function CompanyMonthlyRegister({ cloud, companyName, monthsBack = 24 }) {
         });
         const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
         if (isAllZero) continue;
-        out.push({ mk, ...t, byWorker });
+        const photo = (mine.find((r) => r.photo) || {}).photo || null;
+        out.push({ mk, ...t, byWorker, photo });
       }
       setRows(out);
       setLoading(false);
@@ -2604,6 +2616,7 @@ function CompanyMonthlyRegister({ cloud, companyName, monthsBack = 24 }) {
                 <th style={{ padding: 8 }}>Month</th>
                 {ITEMS.map((i) => <th key={i} style={{ padding: 8 }}>{i} (kg)</th>)}
                 <th style={{ padding: 8 }}>By Worker</th>
+                <th style={{ padding: 8 }}>Photo</th>
               </tr>
             </thead>
             <tbody>
@@ -2614,6 +2627,7 @@ function CompanyMonthlyRegister({ cloud, companyName, monthsBack = 24 }) {
                   <td style={{ padding: 8, fontSize: 12.5, color: COLORS.inkSoft }}>
                     {Object.entries(r.byWorker).map(([w, q]) => `${w}: ${q}kg`).join(", ")}
                   </td>
+                  <td style={{ padding: 8 }}>{r.photo && <img src={r.photo} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4 }} />}</td>
                 </tr>
               ))}
             </tbody>
