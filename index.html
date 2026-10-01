@@ -2138,6 +2138,113 @@ function OwnerPastData({ cloud }) {
    OWNER — WHOLE BILL & ADVANCE (monthly, not day-wise)
    + Investors list
 --------------------------------------------------------- */
+/* ---------------------------------------------------------
+   OWNER REGISTER — clean, read-only, full-page view
+   (All customers' Bill / Advance / Balance for a month,
+   styled like the physical register page.)
+--------------------------------------------------------- */
+function OwnerRegisterPage({ cloud }) {
+  const [mk, setMk] = useState(monthKey());
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+    const out = [];
+    let sr = 1;
+    for (const d of ds.filter((x) => !x.archived)) {
+      const entries = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+      const rates = await cloud.load(`rates:${d.id}:${mk}`, null);
+      const prevBL = Number(await cloud.load(`prevbl:${d.id}:${mk}`, "")) || 0;
+      const advance = (await cloud.load(`advance:${d.id}`, [])) || [];
+      const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
+      const oldBill = await cloud.load(`oldbill:${d.id}:${mk}`, null);
+      const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+      entries.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
+      let billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
+      let advanceTotal = sum(advance, (a) => a.amount);
+      let balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
+      if (oldBill) {
+        billTotal = Number(oldBill.billGiven) || 0;
+        advanceTotal = Number(oldBill.advance) || 0;
+        balance = Number(oldBill.balance) || 0;
+      }
+      if (billTotal === 0 && advanceTotal === 0 && prevBL === 0) continue;
+      out.push({ sr: sr++, id: d.id, name: displayName(d), phone: d.phone || "", billTotal, advanceTotal, balance });
+    }
+    setRows(out);
+    setLoading(false);
+  }, [cloud, mk]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const grand = useMemo(() => ({
+    bill: sum(rows, (r) => r.billTotal),
+    advance: sum(rows, (r) => r.advanceTotal),
+    balance: sum(rows, (r) => r.balance),
+  }), [rows]);
+
+  return (
+    <div style={{ padding: 16, maxWidth: 950, margin: "0 auto" }}>
+      <Card style={{ position: "relative", overflow: "hidden" }}>
+        <Watermark />
+        <div style={{ position: "relative", zIndex: 1 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: `2px solid ${COLORS.maroon}`, paddingBottom: 10, marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 19, color: COLORS.maroon }}>SHAH BROTHERS CHICKEN WASTAGE</div>
+              <div style={{ fontSize: 12, color: COLORS.inkSoft }}>Owner Register — {monthLabel(mk)}</div>
+            </div>
+            <MonthPicker value={mk} onChange={setMk} />
+          </div>
+
+          {loading ? (
+            <div style={{ color: COLORS.inkSoft }}>Loading…</div>
+          ) : rows.length === 0 ? (
+            <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>No bill or advance data found for this month yet.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                <thead>
+                  <tr style={{ textAlign: "left", borderBottom: `2px solid ${COLORS.maroon}` }}>
+                    <th style={{ padding: 8 }}>#</th>
+                    <th style={{ padding: 8 }}>Name</th>
+                    <th style={{ padding: 8 }}>Bill</th>
+                    <th style={{ padding: 8 }}>Advance</th>
+                    <th style={{ padding: 8 }}>Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                      <td style={{ padding: 8, color: COLORS.inkSoft }}>{r.sr}</td>
+                      <td style={{ padding: 8, fontWeight: 700, color: COLORS.maroon }}>{r.name}</td>
+                      <td style={{ padding: 8 }}>{money(r.billTotal)}</td>
+                      <td style={{ padding: 8 }}>{money(r.advanceTotal)}</td>
+                      <td style={{ padding: 8, fontWeight: 700, color: COLORS.gold }}>{money(r.balance)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${COLORS.gold}`, fontWeight: 700 }}>
+                    <td colSpan={2} style={{ padding: 8, color: COLORS.gold }}>TOTAL</td>
+                    <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.bill)}</td>
+                    <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.advance)}</td>
+                    <td style={{ padding: 8, color: COLORS.gold }}>{money(grand.balance)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+      </Card>
+      <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 10, textAlign: "center" }}>
+        To add or edit numbers, use the "Whole Bill &amp; Advance" tab — this page is just for viewing, like your register.
+      </div>
+    </div>
+  );
+}
+
 function OwnerBillRegister({ cloud }) {
   const [mk, setMk] = useState(monthKey());
   const [rows, setRows] = useState([]);
@@ -2146,32 +2253,60 @@ function OwnerBillRegister({ cloud }) {
   const [invForm, setInvForm] = useState({ name: "", amount: "", note: "" });
   const [invPhoto, setInvPhoto] = useState(null);
   const [dukandars, setDukandars] = useState([]);
-  const [oldForm, setOldForm] = useState({ dukandarId: "", month: new Date().getMonth(), year: new Date().getFullYear(), billGiven: "", advance: "", balance: "", photo: null });
-  const [oldMsg, setOldMsg] = useState("");
+  const [bulkValues, setBulkValues] = useState({}); // { [dukandarId]: { billGiven, advance, balance, photo } }
+  const [bulkMsg, setBulkMsg] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
       const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
-      setDukandars(ds);
-      if (ds.length && !oldForm.dukandarId) setOldForm((f) => ({ ...f, dukandarId: ds[0].id }));
+      setDukandars(ds.filter((x) => !x.archived));
     })();
-    // eslint-disable-next-line
   }, [cloud]);
 
-  const saveOldBill = async () => {
-    if (!oldForm.dukandarId) return;
-    setOldMsg("");
-    const omk = `${oldForm.year}-${String(oldForm.month + 1).padStart(2, "0")}`;
-    const rec = {
-      billGiven: Number(oldForm.billGiven) || 0,
-      advance: Number(oldForm.advance) || 0,
-      balance: Number(oldForm.balance) || 0,
-      photo: oldForm.photo || null,
-    };
-    await cloud.save(`oldbill:${oldForm.dukandarId}:${omk}`, rec);
-    if (omk === mk) refresh();
-    setOldMsg(`Saved for ${monthLabel(omk)}.`);
-    setOldForm({ ...oldForm, billGiven: "", advance: "", balance: "", photo: null });
+  // Load this month's existing old-bill values for every customer, into the bulk grid
+  useEffect(() => {
+    if (dukandars.length === 0) return;
+    (async () => {
+      const next = {};
+      for (const d of dukandars) {
+        const ob = await cloud.load(`oldbill:${d.id}:${mk}`, null);
+        next[d.id] = {
+          billGiven: ob ? String(ob.billGiven ?? "") : "",
+          advance: ob ? String(ob.advance ?? "") : "",
+          balance: ob ? String(ob.balance ?? "") : "",
+          photo: ob ? ob.photo || null : null,
+        };
+      }
+      setBulkValues(next);
+    })();
+  }, [dukandars, mk, cloud]);
+
+  const updateBulk = (dukandarId, field, value) => {
+    setBulkValues((v) => ({ ...v, [dukandarId]: { ...(v[dukandarId] || {}), [field]: value } }));
+  };
+
+  const saveAllOldBills = async () => {
+    setBulkBusy(true);
+    setBulkMsg("");
+    let count = 0;
+    for (const d of dukandars) {
+      const v = bulkValues[d.id];
+      if (!v) continue;
+      const hasValue = v.billGiven !== "" || v.advance !== "" || v.balance !== "" || v.photo;
+      if (!hasValue) continue;
+      const rec = {
+        billGiven: Number(v.billGiven) || 0,
+        advance: Number(v.advance) || 0,
+        balance: Number(v.balance) || 0,
+        photo: v.photo || null,
+      };
+      await cloud.save(`oldbill:${d.id}:${mk}`, rec);
+      count++;
+    }
+    setBulkBusy(false);
+    setBulkMsg(`Saved ${count} ${count === 1 ? "customer's" : "customers'"} data for ${monthLabel(mk)}.`);
+    refresh();
   };
 
   const refresh = useCallback(async () => {
@@ -2311,31 +2446,71 @@ function OwnerBillRegister({ cloud }) {
       </Card>
 
       <Card style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Add Old Data (Bill &amp; Advance)</div>
-        <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>For a past month where you only know the totals — enter Bill Given, Advance, and Balance directly, no daily entries needed.</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
-          <Field label="Customer">
-            <select style={inputStyle} value={oldForm.dukandarId} onChange={(e) => setOldForm({ ...oldForm, dukandarId: e.target.value })}>
-              {dukandars.map((d) => <option key={d.id} value={d.id}>{displayName(d)}</option>)}
-            </select>
-          </Field>
-          <Field label="Month">
-            <select style={inputStyle} value={oldForm.month} onChange={(e) => setOldForm({ ...oldForm, month: Number(e.target.value) })}>
-              {["January","February","March","April","May","June","July","August","September","October","November","December"].map((m, i) => <option key={m} value={i}>{m}</option>)}
-            </select>
-          </Field>
-          <Field label="Year">
-            <select style={inputStyle} value={oldForm.year} onChange={(e) => setOldForm({ ...oldForm, year: Number(e.target.value) })}>
-              {[0,1,2,3,4,5].map((n) => { const y = new Date().getFullYear() - n; return <option key={y} value={y}>{y}</option>; })}
-            </select>
-          </Field>
-          <Field label="Bill Given (Rs)"><input type="number" style={inputStyle} value={oldForm.billGiven} onChange={(e) => setOldForm({ ...oldForm, billGiven: e.target.value })} placeholder="0" /></Field>
-          <Field label="Advance (Rs)"><input type="number" style={inputStyle} value={oldForm.advance} onChange={(e) => setOldForm({ ...oldForm, advance: e.target.value })} placeholder="0" /></Field>
-          <Field label="Balance (Rs)"><input type="number" style={inputStyle} value={oldForm.balance} onChange={(e) => setOldForm({ ...oldForm, balance: e.target.value })} placeholder="0" /></Field>
+        <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Add / Edit Old Data — All Customers at Once</div>
+        <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>
+          Just like your register page — fill in Bill Given, Advance and Balance for as many customers as you need for <strong>{monthLabel(mk)}</strong> (the month selected above), then save everyone together in one go.
         </div>
-        <PhotoUpload value={oldForm.photo} onChange={(v) => setOldForm({ ...oldForm, photo: v })} label="Old Bill Photo (optional)" />
-        <Btn onClick={saveOldBill}>Save Old Data</Btn>
-        {oldMsg && <div style={{ marginTop: 10, fontSize: 13, color: COLORS.ok }}>{oldMsg}</div>}
+        {dukandars.length === 0 ? (
+          <div style={{ color: COLORS.inkSoft, fontSize: 13.5 }}>No customers yet. Add some from Manage first.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
+                  <th style={{ padding: 6 }}>Customer</th>
+                  <th style={{ padding: 6 }}>Bill Given (Rs)</th>
+                  <th style={{ padding: 6 }}>Advance (Rs)</th>
+                  <th style={{ padding: 6 }}>Balance (Rs)</th>
+                  <th style={{ padding: 6 }}>Photo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dukandars.map((d) => {
+                  const v = bulkValues[d.id] || { billGiven: "", advance: "", balance: "", photo: null };
+                  return (
+                    <tr key={d.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                      <td style={{ padding: 6, fontWeight: 700, color: COLORS.maroon, whiteSpace: "nowrap" }}>{displayName(d)}</td>
+                      <td style={{ padding: 6 }}>
+                        <input type="number" style={{ ...inputStyle, width: 100, padding: "6px 8px" }} value={v.billGiven} onChange={(e) => updateBulk(d.id, "billGiven", e.target.value)} placeholder="0" />
+                      </td>
+                      <td style={{ padding: 6 }}>
+                        <input type="number" style={{ ...inputStyle, width: 100, padding: "6px 8px" }} value={v.advance} onChange={(e) => updateBulk(d.id, "advance", e.target.value)} placeholder="0" />
+                      </td>
+                      <td style={{ padding: 6 }}>
+                        <input type="number" style={{ ...inputStyle, width: 100, padding: "6px 8px" }} value={v.balance} onChange={(e) => updateBulk(d.id, "balance", e.target.value)} placeholder="0" />
+                      </td>
+                      <td style={{ padding: 6 }}>
+                        {v.photo ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <img src={v.photo} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4 }} />
+                            <button onClick={() => updateBulk(d.id, "photo", null)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 11 }}>✕</button>
+                          </div>
+                        ) : (
+                          <input
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            style={{ fontSize: 11, width: 90 }}
+                            onChange={async (e) => {
+                              const file = e.target.files && e.target.files[0];
+                              if (!file) return;
+                              const dataUrl = await compressImageFile(file);
+                              updateBulk(d.id, "photo", dataUrl);
+                            }}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <Btn onClick={saveAllOldBills} disabled={bulkBusy} style={{ marginTop: 12 }}>
+          {bulkBusy ? "Saving…" : `Save All for ${monthLabel(mk)}`}
+        </Btn>
+        {bulkMsg && <div style={{ marginTop: 10, fontSize: 13, color: COLORS.ok }}>{bulkMsg}</div>}
       </Card>
 
       <Card>
@@ -2511,31 +2686,84 @@ function OwnerCompanyRegister({ cloud }) {
 function WorkerMonthlyOverview({ cloud, worker }) {
   const [customers, setCustomers] = useState([]);
   const [companyRows, setCompanyRows] = useState([]);
+  const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const allDukandars = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
-      const mine = allDukandars.filter((d) => d.workerId === worker.id);
-      setCustomers(mine);
+  const [custForm, setCustForm] = useState({ dukandarId: "", date: todayISO(), dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  const [custMsg, setCustMsg] = useState("");
+  const [compForm, setCompForm] = useState({ companyName: "", date: todayISO(), item: ITEMS[0], qty: "" });
+  const [compMsg, setCompMsg] = useState("");
 
-      const months = pastMonths(12);
-      const compOut = [];
-      for (const mk of months) {
-        const f = (await cloud.load(`factory:${mk}`, [])) || [];
-        const mine2 = f.filter((r) => r.enteredBy === worker.name);
-        if (mine2.length === 0) continue;
-        const byCompany = {};
-        mine2.forEach((r) => {
-          byCompany[r.factoryName] = (byCompany[r.factoryName] || 0) + (Number(r.qty) || 0);
-        });
-        compOut.push({ mk, byCompany });
-      }
-      setCompanyRows(compOut);
-      setLoading(false);
-    })();
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const allDukandars = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+    const mine = allDukandars.filter((d) => d.workerId === worker.id);
+    setCustomers(mine);
+    if (mine.length && !custForm.dukandarId) setCustForm((f) => ({ ...f, dukandarId: mine[0].id }));
+
+    const cs = (await cloud.load("meta:companies", [])) || [];
+    const activeCs = cs.filter((c) => !c.archived);
+    setCompanies(activeCs);
+    if (activeCs.length && !compForm.companyName) setCompForm((f) => ({ ...f, companyName: activeCs[0].name }));
+
+    const months = pastMonths(12);
+    const compOut = [];
+    for (const mk of months) {
+      const f = (await cloud.load(`factory:${mk}`, [])) || [];
+      const mine2 = f.filter((r) => r.enteredBy === worker.name);
+      if (mine2.length === 0) continue;
+      const byCompany = {};
+      mine2.forEach((r) => {
+        byCompany[r.factoryName] = (byCompany[r.factoryName] || 0) + (Number(r.qty) || 0);
+      });
+      compOut.push({ mk, byCompany });
+    }
+    setCompanyRows(compOut);
+    setLoading(false);
+    // eslint-disable-next-line
   }, [worker, cloud]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const addCustomerEntry = async () => {
+    if (!custForm.dukandarId) return;
+    setCustMsg("");
+    const mk = custForm.date.slice(0, 7);
+    const existing = (await cloud.load(`entries:${custForm.dukandarId}:${mk}`, [])) || [];
+    const rec = {
+      date: custForm.date,
+      dum: Number(custForm.dum) || 0,
+      kachra: Number(custForm.kachra) || 0,
+      charbi: Number(custForm.charbi) || 0,
+      machli: Number(custForm.machli) || 0,
+      paya: Number(custForm.paya) || 0,
+      enteredBy: worker.name,
+    };
+    const updated = [rec, ...existing.filter((e) => e.date !== rec.date)];
+    await cloud.save(`entries:${custForm.dukandarId}:${mk}`, updated);
+    setCustMsg(`Saved for ${fmtDate(custForm.date)}.`);
+    setCustForm({ ...custForm, dum: "", kachra: "", charbi: "", machli: "", paya: "" });
+  };
+
+  const addCompanyEntry = async () => {
+    if (!compForm.companyName || !compForm.qty) return;
+    setCompMsg("");
+    const mk = compForm.date.slice(0, 7);
+    const existing = (await cloud.load(`factory:${mk}`, [])) || [];
+    const rec = {
+      id: uid("F"),
+      date: compForm.date,
+      factoryName: compForm.companyName,
+      item: compForm.item,
+      qty: Number(compForm.qty),
+      enteredBy: worker.name,
+    };
+    const updated = [rec, ...existing];
+    await cloud.save(`factory:${mk}`, updated);
+    setCompMsg(`Saved for ${fmtDate(compForm.date)}.`);
+    setCompForm({ ...compForm, qty: "" });
+    refresh();
+  };
 
   if (loading) return <div style={{ color: COLORS.inkSoft, padding: 10 }}>Loading…</div>;
 
@@ -2555,6 +2783,51 @@ function WorkerMonthlyOverview({ cloud, worker }) {
           </div>
         )}
       </Card>
+
+      {customers.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Add Customer Entry (Old or New) — as {worker.name}</div>
+          <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 10 }}>Pick any date — past or today — to backfill or add today's entry for this worker's customer.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10 }}>
+            <Field label="Customer">
+              <select style={inputStyle} value={custForm.dukandarId} onChange={(e) => setCustForm({ ...custForm, dukandarId: e.target.value })}>
+                {customers.map((c) => <option key={c.id} value={c.id}>{displayName(c)}</option>)}
+              </select>
+            </Field>
+            <Field label="Date"><input type="date" style={inputStyle} value={custForm.date} max={todayISO()} onChange={(e) => setCustForm({ ...custForm, date: e.target.value })} /></Field>
+            {ITEM_KEYS.map((k, i) => (
+              <Field key={k} label={ITEMS[i]}>
+                <input type="number" style={inputStyle} value={custForm[k]} onChange={(e) => setCustForm({ ...custForm, [k]: e.target.value })} placeholder="0" />
+              </Field>
+            ))}
+          </div>
+          <Btn onClick={addCustomerEntry} style={{ marginTop: 8 }}>Save Customer Entry</Btn>
+          {custMsg && <div style={{ marginTop: 8, fontSize: 13, color: COLORS.ok }}>{custMsg}</div>}
+        </Card>
+      )}
+
+      {companies.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.maroon }}>Add Company Entry (Old or New) — as {worker.name}</div>
+          <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 10 }}>Pick any date — past or today — to backfill or add today's company delivery for this worker.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10 }}>
+            <Field label="Company">
+              <select style={inputStyle} value={compForm.companyName} onChange={(e) => setCompForm({ ...compForm, companyName: e.target.value })}>
+                {companies.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Date"><input type="date" style={inputStyle} value={compForm.date} max={todayISO()} onChange={(e) => setCompForm({ ...compForm, date: e.target.value })} /></Field>
+            <Field label="Item">
+              <select style={inputStyle} value={compForm.item} onChange={(e) => setCompForm({ ...compForm, item: e.target.value })}>
+                {ITEMS.map((i) => <option key={i} value={i}>{i}</option>)}
+              </select>
+            </Field>
+            <Field label="Qty (kg)"><input type="number" style={inputStyle} value={compForm.qty} onChange={(e) => setCompForm({ ...compForm, qty: e.target.value })} /></Field>
+          </div>
+          <Btn onClick={addCompanyEntry} style={{ marginTop: 8 }}>Save Company Entry</Btn>
+          {compMsg && <div style={{ marginTop: 8, fontSize: 13, color: COLORS.ok }}>{compMsg}</div>}
+        </Card>
+      )}
 
       <Card>
         <div style={{ fontWeight: 700, marginBottom: 10, color: COLORS.maroon }}>Company Deliveries — by Month</div>
@@ -3026,6 +3299,7 @@ function OwnerDashboard({ session, cloud, tab, setTab }) {
     { key: "salary", label: "Salary/Expenses" },
     { key: "past", label: "Old Data" },
     { key: "billregister", label: "Whole Bill & Advance" },
+    { key: "ownerregister", label: "Owner Register" },
     { key: "companyregister", label: "Company Register" },
     { key: "workerregister", label: "Worker Register" },
     { key: "manage", label: "Manage" },
@@ -3041,6 +3315,7 @@ function OwnerDashboard({ session, cloud, tab, setTab }) {
       {tab === "salary" && <OwnerSalary cloud={cloud} />}
       {tab === "past" && <OwnerPastData cloud={cloud} />}
       {tab === "billregister" && <OwnerBillRegister cloud={cloud} />}
+      {tab === "ownerregister" && <OwnerRegisterPage cloud={cloud} />}
       {tab === "companyregister" && <OwnerCompanyRegister cloud={cloud} />}
       {tab === "workerregister" && <OwnerWorkerRegister cloud={cloud} />}
       {tab === "manage" && <OwnerManage cloud={cloud} />}
