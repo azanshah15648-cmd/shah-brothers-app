@@ -884,18 +884,19 @@ function MonthlyRegister({ cloud, dukandarId, monthsBack = 24 }) {
     (async () => {
       setLoading(true);
       const months = pastMonths(monthsBack);
-      const out = [];
-      for (const mk of months) {
-        const e = toArray((await cloud.load(`entries:${dukandarId}:${mk}`, [])));
-        if (e.length === 0) continue;
-        const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
-        e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
-        const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
-        if (isAllZero) continue;
-        const photo = (e.find((rec) => rec.photo) || {}).photo || null;
-        out.push({ mk, ...t, photo });
-      }
-      setRows(out);
+      const perMonth = await Promise.all(
+        months.map(async (mk) => {
+          const e = toArray((await cloud.load(`entries:${dukandarId}:${mk}`, [])));
+          if (e.length === 0) return null;
+          const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+          e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
+          const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
+          if (isAllZero) return null;
+          const photo = (e.find((rec) => rec.photo) || {}).photo || null;
+          return { mk, ...t, photo };
+        })
+      );
+      setRows(perMonth.filter(Boolean));
       setLoading(false);
     })();
   }, [dukandarId, cloud, monthsBack]);
@@ -1253,16 +1254,23 @@ function OwnerLive({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
-    setDukandars(ds);
-    const all = [];
-    for (const d of ds.filter((x) => !x.archived)) {
-      const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
-      e.forEach((rec) => all.push({ ...rec, dukandarName: displayName(d) }));
+    try {
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
+      setDukandars(ds);
+      const perCustomer = await Promise.all(
+        ds.filter((x) => !x.archived).map(async (d) => {
+          const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
+          return e.map((rec) => ({ ...rec, dukandarName: displayName(d) }));
+        })
+      );
+      const all = perCustomer.flat();
+      all.sort((a, b) => (a.date < b.date ? 1 : -1));
+      setRows(all.slice(0, 60));
+    } catch (err) {
+      console.error("Live Feed failed to load:", err);
+    } finally {
+      setLoading(false);
     }
-    all.sort((a, b) => (a.date < b.date ? 1 : -1));
-    setRows(all.slice(0, 60));
-    setLoading(false);
   }, [cloud, mk]);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -1321,17 +1329,23 @@ function OwnerTotals({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
-      setDukandars(ds);
-      const out = [];
-      for (const d of ds.filter((x) => !x.archived)) {
-        const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
-        const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
-        e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
-        out.push({ id: d.id, name: displayName(d), ...t, days: e.length });
+      try {
+        const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
+        setDukandars(ds);
+        const out = await Promise.all(
+          ds.filter((x) => !x.archived).map(async (d) => {
+            const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
+            const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+            e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
+            return { id: d.id, name: displayName(d), ...t, days: e.length };
+          })
+        );
+        setTotals(out);
+      } catch (err) {
+        console.error("Monthly Totals failed to load:", err);
+      } finally {
+        setLoading(false);
       }
-      setTotals(out);
-      setLoading(false);
     })();
   }, [cloud, mk]);
 
@@ -2123,15 +2137,17 @@ function OwnerPastData({ cloud }) {
   useEffect(() => {
     if (mode !== "all" || dukandars.length === 0) return;
     (async () => {
-      const next = {};
-      for (const d of dukandars) {
-        const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
-        const hist = e.find((r) => r.historical);
-        next[d.id] = hist
-          ? { dum: String(hist.dum ?? ""), kachra: String(hist.kachra ?? ""), charbi: String(hist.charbi ?? ""), machli: String(hist.machli ?? ""), paya: String(hist.paya ?? ""), photo: hist.photo || null }
-          : { dum: "", kachra: "", charbi: "", machli: "", paya: "", photo: null };
-      }
-      setBulkVals(next);
+      const pairs = await Promise.all(
+        dukandars.map(async (d) => {
+          const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
+          const hist = e.find((r) => r.historical);
+          const v = hist
+            ? { dum: String(hist.dum ?? ""), kachra: String(hist.kachra ?? ""), charbi: String(hist.charbi ?? ""), machli: String(hist.machli ?? ""), paya: String(hist.paya ?? ""), photo: hist.photo || null }
+            : { dum: "", kachra: "", charbi: "", machli: "", paya: "", photo: null };
+          return [d.id, v];
+        })
+      );
+      setBulkVals(Object.fromEntries(pairs));
     })();
   }, [mode, dukandars, mk, cloud]);
 
@@ -2335,32 +2351,48 @@ function OwnerRegisterPage({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
-    const out = [];
-    let sr = 1;
-    for (const d of ds.filter((x) => !x.archived)) {
-      const entries = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
-      const rates = await cloud.load(`rates:${d.id}:${mk}`, null);
-      const prevBL = Number(await cloud.load(`prevbl:${d.id}:${mk}`, "")) || 0;
-      const advance = toArray((await cloud.load(`advance:${d.id}`, [])));
-      const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
-      const oldBill = await cloud.load(`oldbill:${d.id}:${mk}`, null);
-      const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
-      entries.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
-      let billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
-      let advanceTotal = sum(advance, (a) => a.amount);
-      let balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
-      if (oldBill) {
-        billTotal = Number(oldBill.billGiven) || 0;
-        advanceTotal = Number(oldBill.advance) || 0;
-        balance = Number(oldBill.balance) || 0;
-      }
-      out.push({ sr: sr++, id: d.id, name: displayName(d), phone: d.phone || "", billTotal, advanceTotal, balance });
+    try {
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
+      const active = ds.filter((x) => !x.archived);
+
+      // Fetch every customer's data in parallel instead of one-by-one —
+      // with many customers, sequential loading could take a long time
+      // and look like the page was stuck.
+      const results = await Promise.all(
+        active.map(async (d) => {
+          const [entries, rates, prevBLraw, advance, autoMinus, oldBill] = await Promise.all([
+            cloud.load(`entries:${d.id}:${mk}`, []),
+            cloud.load(`rates:${d.id}:${mk}`, null),
+            cloud.load(`prevbl:${d.id}:${mk}`, ""),
+            cloud.load(`advance:${d.id}`, []),
+            cloud.load(`autoMinus:${d.id}`, false),
+            cloud.load(`oldbill:${d.id}:${mk}`, null),
+          ]);
+          const entriesArr = toArray(entries);
+          const advanceArr = toArray(advance);
+          const prevBL = Number(prevBLraw) || 0;
+          const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+          entriesArr.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
+          let billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
+          let advanceTotal = sum(advanceArr, (a) => a.amount);
+          let balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
+          if (oldBill) {
+            billTotal = Number(oldBill.billGiven) || 0;
+            advanceTotal = Number(oldBill.advance) || 0;
+            balance = Number(oldBill.balance) || 0;
+          }
+          return { id: d.id, name: displayName(d), phone: d.phone || "", billTotal, advanceTotal, balance };
+        })
+      );
+
+      setRows(results.map((r, i) => ({ ...r, sr: i + 1 })));
+      const mp = await cloud.load(`billPhotosMonth:${mk}`, null);
+      setMonthPhotos(mp || [null, null, null]);
+    } catch (err) {
+      console.error("Owner Register failed to load:", err);
+    } finally {
+      setLoading(false);
     }
-    setRows(out);
-    const mp = await cloud.load(`billPhotosMonth:${mk}`, null);
-    setMonthPhotos(mp || [null, null, null]);
-    setLoading(false);
   }, [cloud, mk]);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -2466,16 +2498,17 @@ function OwnerBillRegister({ cloud }) {
   useEffect(() => {
     if (dukandars.length === 0) return;
     (async () => {
-      const next = {};
-      for (const d of dukandars) {
-        const ob = await cloud.load(`oldbill:${d.id}:${mk}`, null);
-        next[d.id] = {
-          billGiven: ob ? String(ob.billGiven ?? "") : "",
-          advance: ob ? String(ob.advance ?? "") : "",
-          balance: ob ? String(ob.balance ?? "") : "",
-        };
-      }
-      setBulkValues(next);
+      const pairs = await Promise.all(
+        dukandars.map(async (d) => {
+          const ob = await cloud.load(`oldbill:${d.id}:${mk}`, null);
+          return [d.id, {
+            billGiven: ob ? String(ob.billGiven ?? "") : "",
+            advance: ob ? String(ob.advance ?? "") : "",
+            balance: ob ? String(ob.balance ?? "") : "",
+          }];
+        })
+      );
+      setBulkValues(Object.fromEntries(pairs));
       const mp = await cloud.load(`billPhotosMonth:${mk}`, null);
       setMonthPhotos(mp || [null, null, null]);
     })();
@@ -2516,33 +2549,47 @@ function OwnerBillRegister({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
-    const out = [];
-    for (const d of ds.filter((x) => !x.archived)) {
-      const entries = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
-      const rates = await cloud.load(`rates:${d.id}:${mk}`, null);
-      const prevBL = Number(await cloud.load(`prevbl:${d.id}:${mk}`, "")) || 0;
-      const advance = toArray((await cloud.load(`advance:${d.id}`, [])));
-      const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
-      const oldBill = await cloud.load(`oldbill:${d.id}:${mk}`, null);
-      const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
-      entries.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
-      let billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
-      let advanceTotal = sum(advance, (a) => a.amount);
-      let balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
-      let isOld = false;
-      if (oldBill) {
-        billTotal = Number(oldBill.billGiven) || 0;
-        advanceTotal = Number(oldBill.advance) || 0;
-        balance = Number(oldBill.balance) || 0;
-        isOld = true;
-      }
-      out.push({ id: d.id, name: displayName(d), billTotal, advanceTotal, prevBL, balance, isOld });
+    try {
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
+      const active = ds.filter((x) => !x.archived);
+
+      const results = await Promise.all(
+        active.map(async (d) => {
+          const [entries, rates, prevBLraw, advance, autoMinus, oldBill] = await Promise.all([
+            cloud.load(`entries:${d.id}:${mk}`, []),
+            cloud.load(`rates:${d.id}:${mk}`, null),
+            cloud.load(`prevbl:${d.id}:${mk}`, ""),
+            cloud.load(`advance:${d.id}`, []),
+            cloud.load(`autoMinus:${d.id}`, false),
+            cloud.load(`oldbill:${d.id}:${mk}`, null),
+          ]);
+          const entriesArr = toArray(entries);
+          const advanceArr = toArray(advance);
+          const prevBL = Number(prevBLraw) || 0;
+          const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+          entriesArr.forEach((e) => ITEM_KEYS.forEach((k) => (totals[k] += Number(e[k]) || 0)));
+          let billTotal = rates ? ITEM_KEYS.reduce((a, k) => a + totals[k] * (Number(rates[k]) || 0), 0) : 0;
+          let advanceTotal = sum(advanceArr, (a) => a.amount);
+          let balance = autoMinus ? billTotal + prevBL - advanceTotal : billTotal + prevBL;
+          let isOld = false;
+          if (oldBill) {
+            billTotal = Number(oldBill.billGiven) || 0;
+            advanceTotal = Number(oldBill.advance) || 0;
+            balance = Number(oldBill.balance) || 0;
+            isOld = true;
+          }
+          return { id: d.id, name: displayName(d), billTotal, advanceTotal, prevBL, balance, isOld };
+        })
+      );
+
+      setRows(results);
+      const inv = toArray((await cloud.load("meta:investors", [])));
+      setInvestors(inv);
+    } catch (err) {
+      console.error("Whole Bill & Advance failed to load:", err);
+    } finally {
+      setLoading(false);
     }
-    setRows(out);
-    const inv = toArray((await cloud.load("meta:investors", [])));
-    setInvestors(inv);
-    setLoading(false);
   }, [cloud, mk]);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -2752,25 +2799,26 @@ function CompanyMonthlyRegister({ cloud, companyName, monthsBack = 24 }) {
     (async () => {
       setLoading(true);
       const months = pastMonths(monthsBack);
-      const out = [];
-      for (const mk of months) {
-        const f = toArray((await cloud.load(`factory:${mk}`, [])));
-        const mine = f.filter((r) => r.factoryName === companyName);
-        if (mine.length === 0) continue;
-        const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
-        const byWorker = {};
-        mine.forEach((r) => {
-          const key = ITEM_KEYS[ITEMS.indexOf(r.item)];
-          if (key) t[key] += Number(r.qty) || 0;
-          const w = r.enteredBy || "Unknown";
-          byWorker[w] = (byWorker[w] || 0) + (Number(r.qty) || 0);
-        });
-        const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
-        if (isAllZero) continue;
-        const photo = (mine.find((r) => r.photo) || {}).photo || null;
-        out.push({ mk, ...t, byWorker, photo });
-      }
-      setRows(out);
+      const perMonth = await Promise.all(
+        months.map(async (mk) => {
+          const f = toArray((await cloud.load(`factory:${mk}`, [])));
+          const mine = f.filter((r) => r.factoryName === companyName);
+          if (mine.length === 0) return null;
+          const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
+          const byWorker = {};
+          mine.forEach((r) => {
+            const key = ITEM_KEYS[ITEMS.indexOf(r.item)];
+            if (key) t[key] += Number(r.qty) || 0;
+            const w = r.enteredBy || "Unknown";
+            byWorker[w] = (byWorker[w] || 0) + (Number(r.qty) || 0);
+          });
+          const isAllZero = ITEM_KEYS.every((k) => t[k] === 0);
+          if (isAllZero) return null;
+          const photo = (mine.find((r) => r.photo) || {}).photo || null;
+          return { mk, ...t, byWorker, photo };
+        })
+      );
+      setRows(perMonth.filter(Boolean));
       setLoading(false);
     })();
   }, [companyName, cloud, monthsBack]);
