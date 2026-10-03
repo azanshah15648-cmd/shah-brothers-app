@@ -395,6 +395,15 @@ function money(n) {
   const v = Number(n) || 0;
   return "Rs " + v.toLocaleString("en-PK", { maximumFractionDigits: 0 });
 }
+// Firebase Realtime Database sometimes stores arrays as plain objects
+// (e.g. after deletions leave gaps). This makes sure we always get a
+// real array back, so .map/.filter/.reduce never crash the page.
+function toArray(x) {
+  if (Array.isArray(x)) return x;
+  if (x && typeof x === "object") return Object.values(x);
+  return [];
+}
+
 function sum(arr, fn) {
   return arr.reduce((a, b) => a + (Number(fn(b)) || 0), 0);
 }
@@ -484,7 +493,10 @@ function useCloud() {
     }
   }, []);
 
-  return { save, load, online, pendingCount: pending.length, flush };
+  return useMemo(
+    () => ({ save, load, online, pendingCount: pending.length, flush }),
+    [save, load, online, pending.length, flush]
+  );
 }
 
 /* ---------------------------------------------------------
@@ -655,12 +667,12 @@ function LoginScreen({ cloud, onLogin }) {
           setErr("Incorrect password.");
         }
       } else if (role === "worker") {
-        const workers = (await cloud.load("meta:workers", [])) || [];
+        const workers = toArray((await cloud.load("meta:workers", [])));
         const w = workers.find((x) => x.code.toLowerCase() === code.trim().toLowerCase());
         if (w) onLogin({ role: "worker", id: w.id, name: displayName(w) });
         else setErr("This code doesn't match any worker.");
       } else if (role === "dukandar") {
-        const dukandars = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+        const dukandars = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
         const d = dukandars.find((x) => x.pin.toLowerCase() === code.trim().toLowerCase());
         if (d) onLogin({ role: "dukandar", id: d.id, name: displayName(d) });
         else setErr("This PIN doesn't match any customer.");
@@ -874,7 +886,7 @@ function MonthlyRegister({ cloud, dukandarId, monthsBack = 24 }) {
       const months = pastMonths(monthsBack);
       const out = [];
       for (const mk of months) {
-        const e = (await cloud.load(`entries:${dukandarId}:${mk}`, [])) || [];
+        const e = toArray((await cloud.load(`entries:${dukandarId}:${mk}`, [])));
         if (e.length === 0) continue;
         const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
         e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
@@ -950,7 +962,7 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
 
   useEffect(() => {
     (async () => {
-      const all = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      const all = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
       const mine = all.filter((d) => d.workerId === session.id && !d.archived);
       setDukandars(mine);
       if (mine.length) setSelected(mine[0].id);
@@ -963,7 +975,7 @@ function WorkerDashboard({ session, cloud, view: viewProp, setView: setViewProp 
   useEffect(() => {
     if (!selected) return;
     (async () => {
-      const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+      const e = toArray((await cloud.load(`entries:${selected}:${mk}`, [])));
       setEntries(e.sort((a, b) => (a.date < b.date ? 1 : -1)));
     })();
   }, [selected, mk, cloud]);
@@ -1153,7 +1165,7 @@ function DukandarDashboard({ session, cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const e = (await cloud.load(`entries:${session.id}:${mk}`, [])) || [];
+      const e = toArray((await cloud.load(`entries:${session.id}:${mk}`, [])));
       setEntries(e.sort((a, b) => (a.date < b.date ? 1 : -1)));
       setLoading(false);
     })();
@@ -1241,11 +1253,11 @@ function OwnerLive({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+    const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
     setDukandars(ds);
     const all = [];
     for (const d of ds.filter((x) => !x.archived)) {
-      const e = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+      const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
       e.forEach((rec) => all.push({ ...rec, dukandarName: displayName(d) }));
     }
     all.sort((a, b) => (a.date < b.date ? 1 : -1));
@@ -1309,11 +1321,11 @@ function OwnerTotals({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
       setDukandars(ds);
       const out = [];
       for (const d of ds.filter((x) => !x.archived)) {
-        const e = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+        const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
         const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
         e.forEach((rec) => ITEM_KEYS.forEach((k) => (t[k] += Number(rec[k]) || 0)));
         out.push({ id: d.id, name: displayName(d), ...t, days: e.length });
@@ -1389,7 +1401,7 @@ function OwnerRegister({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
       setDukandars(ds);
       setLoading(false);
     })();
@@ -1488,11 +1500,11 @@ function FactoryPage({ cloud, canManageRate, session }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const r = (await cloud.load(`factory:${mk}`, [])) || [];
+      const r = toArray((await cloud.load(`factory:${mk}`, [])));
       setRows(r.sort((a, b) => (a.date < b.date ? 1 : -1)));
       const rt = await cloud.load(`factoryRate:${mk}`, null);
       setRate(rt || { dum: "", kachra: "", charbi: "", machli: "", paya: "" });
-      const cs = (await cloud.load("meta:companies", [])) || [];
+      const cs = toArray((await cloud.load("meta:companies", [])));
       setCompanies(cs.filter((c) => !c.archived));
       if (cs.length && !form.factoryName) {
         setForm((f) => ({ ...f, factoryName: cs[0].name }));
@@ -1534,7 +1546,7 @@ function FactoryPage({ cloud, canManageRate, session }) {
     if (!oldForm.factoryName) return;
     setOldMsg("");
     const omk = `${oldForm.year}-${String(oldForm.month + 1).padStart(2, "0")}`;
-    const existing = (await cloud.load(`factory:${omk}`, [])) || [];
+    const existing = toArray((await cloud.load(`factory:${omk}`, [])));
     const withoutOldForThisCompany = existing.filter((r) => !(r.historical && r.factoryName === oldForm.factoryName));
     const newRows = ITEM_KEYS.map((k, i) => ({
       id: uid("F"),
@@ -1749,7 +1761,7 @@ function OwnerRates({ cloud }) {
 
   useEffect(() => {
     (async () => {
-      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
       setDukandars(ds.filter((d) => !d.archived));
       if (ds.length && !selected) setSelected(ds[0].id);
     })();
@@ -1760,11 +1772,11 @@ function OwnerRates({ cloud }) {
     if (!selected) return;
     (async () => {
       setLoading(true);
-      const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+      const e = toArray((await cloud.load(`entries:${selected}:${mk}`, [])));
       setEntries(e);
       const r = await cloud.load(`rates:${selected}:${mk}`, null);
       setRates(r || { dum: "", kachra: "", charbi: "", machli: "", paya: "" });
-      const adv = (await cloud.load(`advance:${selected}`, [])) || [];
+      const adv = toArray((await cloud.load(`advance:${selected}`, [])));
       setAdvance(adv);
       const bl = await cloud.load(`prevbl:${selected}:${mk}`, "");
       setPrevBL(bl || "");
@@ -1960,11 +1972,11 @@ function OwnerSalary({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const w = (await cloud.load("meta:workers", [])) || [];
+      const w = toArray((await cloud.load("meta:workers", [])));
       setWorkers(w);
-      const s = (await cloud.load(`salary:${mk}`, [])) || [];
+      const s = toArray((await cloud.load(`salary:${mk}`, [])));
       setSalaries(s);
-      const e = (await cloud.load(`expense:${mk}`, [])) || [];
+      const e = toArray((await cloud.load(`expense:${mk}`, [])));
       setExpenses(e);
       if (w.length) setSalForm((f) => ({ ...f, workerId: w[0].id }));
       setLoading(false);
@@ -2085,7 +2097,7 @@ function OwnerPastData({ cloud }) {
 
   useEffect(() => {
     (async () => {
-      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
       setDukandars(ds);
       if (ds.length && !selected) setSelected(ds[0].id);
     })();
@@ -2095,7 +2107,7 @@ function OwnerPastData({ cloud }) {
   useEffect(() => {
     if (!selected) return;
     (async () => {
-      const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+      const e = toArray((await cloud.load(`entries:${selected}:${mk}`, [])));
       const hist = e.find((r) => r.historical);
       setExisting(hist || null);
       setVals(
@@ -2113,11 +2125,11 @@ function OwnerPastData({ cloud }) {
     (async () => {
       const next = {};
       for (const d of dukandars) {
-        const e = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+        const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
         const hist = e.find((r) => r.historical);
         next[d.id] = hist
-          ? { dum: String(hist.dum ?? ""), kachra: String(hist.kachra ?? ""), charbi: String(hist.charbi ?? ""), machli: String(hist.machli ?? ""), paya: String(hist.paya ?? "") }
-          : { dum: "", kachra: "", charbi: "", machli: "", paya: "" };
+          ? { dum: String(hist.dum ?? ""), kachra: String(hist.kachra ?? ""), charbi: String(hist.charbi ?? ""), machli: String(hist.machli ?? ""), paya: String(hist.paya ?? ""), photo: hist.photo || null }
+          : { dum: "", kachra: "", charbi: "", machli: "", paya: "", photo: null };
       }
       setBulkVals(next);
     })();
@@ -2134,9 +2146,9 @@ function OwnerPastData({ cloud }) {
     for (const d of dukandars) {
       const v = bulkVals[d.id];
       if (!v) continue;
-      const hasValue = ITEM_KEYS.some((k) => v[k] !== "");
+      const hasValue = ITEM_KEYS.some((k) => v[k] !== "") || v.photo;
       if (!hasValue) continue;
-      const e = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+      const e = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
       const rec = {
         date: `${mk}-01`,
         dum: Number(v.dum) || 0,
@@ -2144,6 +2156,7 @@ function OwnerPastData({ cloud }) {
         charbi: Number(v.charbi) || 0,
         machli: Number(v.machli) || 0,
         paya: Number(v.paya) || 0,
+        photo: v.photo || null,
         historical: true,
         enteredBy: "Owner (manual)",
       };
@@ -2157,7 +2170,7 @@ function OwnerPastData({ cloud }) {
 
   const save = async () => {
     setMsg("");
-    const e = (await cloud.load(`entries:${selected}:${mk}`, [])) || [];
+    const e = toArray((await cloud.load(`entries:${selected}:${mk}`, [])));
     const rec = {
       date: `${mk}-01`,
       dum: Number(vals.dum) || 0,
@@ -2250,11 +2263,12 @@ function OwnerPastData({ cloud }) {
                   <tr style={{ textAlign: "left", color: COLORS.inkSoft, borderBottom: `2px solid ${COLORS.line}` }}>
                     <th style={{ padding: 6 }}>Customer</th>
                     {ITEMS.map((i) => <th key={i} style={{ padding: 6 }}>{i}</th>)}
+                    <th style={{ padding: 6 }}>Photo</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dukandars.map((d) => {
-                    const v = bulkVals[d.id] || { dum: "", kachra: "", charbi: "", machli: "", paya: "" };
+                    const v = bulkVals[d.id] || { dum: "", kachra: "", charbi: "", machli: "", paya: "", photo: null };
                     return (
                       <tr key={d.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
                         <td style={{ padding: 6, fontWeight: 700, color: COLORS.maroon, whiteSpace: "nowrap" }}>{displayName(d)}</td>
@@ -2263,6 +2277,27 @@ function OwnerPastData({ cloud }) {
                             <input type="number" style={{ ...inputStyle, width: 80, padding: "6px 8px" }} value={v[k]} onChange={(e) => updateBulkVal(d.id, k, e.target.value)} placeholder="0" />
                           </td>
                         ))}
+                        <td style={{ padding: 6 }}>
+                          {v.photo ? (
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <ZoomableImage src={v.photo} size={28} />
+                              <button onClick={() => updateBulkVal(d.id, "photo", null)} style={{ border: "none", background: "none", color: "#A63131", cursor: "pointer", fontSize: 11 }}>✕</button>
+                            </div>
+                          ) : (
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              style={{ fontSize: 11, width: 90 }}
+                              onChange={async (e) => {
+                                const file = e.target.files && e.target.files[0];
+                                if (!file) return;
+                                const dataUrl = await compressImageFile(file);
+                                updateBulkVal(d.id, "photo", dataUrl);
+                              }}
+                            />
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
@@ -2300,14 +2335,14 @@ function OwnerRegisterPage({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+    const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
     const out = [];
     let sr = 1;
     for (const d of ds.filter((x) => !x.archived)) {
-      const entries = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+      const entries = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
       const rates = await cloud.load(`rates:${d.id}:${mk}`, null);
       const prevBL = Number(await cloud.load(`prevbl:${d.id}:${mk}`, "")) || 0;
-      const advance = (await cloud.load(`advance:${d.id}`, [])) || [];
+      const advance = toArray((await cloud.load(`advance:${d.id}`, [])));
       const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
       const oldBill = await cloud.load(`oldbill:${d.id}:${mk}`, null);
       const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
@@ -2422,7 +2457,7 @@ function OwnerBillRegister({ cloud }) {
 
   useEffect(() => {
     (async () => {
-      const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+      const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
       setDukandars(ds.filter((x) => !x.archived));
     })();
   }, [cloud]);
@@ -2481,13 +2516,13 @@ function OwnerBillRegister({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const ds = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+    const ds = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
     const out = [];
     for (const d of ds.filter((x) => !x.archived)) {
-      const entries = (await cloud.load(`entries:${d.id}:${mk}`, [])) || [];
+      const entries = toArray((await cloud.load(`entries:${d.id}:${mk}`, [])));
       const rates = await cloud.load(`rates:${d.id}:${mk}`, null);
       const prevBL = Number(await cloud.load(`prevbl:${d.id}:${mk}`, "")) || 0;
-      const advance = (await cloud.load(`advance:${d.id}`, [])) || [];
+      const advance = toArray((await cloud.load(`advance:${d.id}`, [])));
       const autoMinus = await cloud.load(`autoMinus:${d.id}`, false);
       const oldBill = await cloud.load(`oldbill:${d.id}:${mk}`, null);
       const totals = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
@@ -2505,7 +2540,7 @@ function OwnerBillRegister({ cloud }) {
       out.push({ id: d.id, name: displayName(d), billTotal, advanceTotal, prevBL, balance, isOld });
     }
     setRows(out);
-    const inv = (await cloud.load("meta:investors", [])) || [];
+    const inv = toArray((await cloud.load("meta:investors", [])));
     setInvestors(inv);
     setLoading(false);
   }, [cloud, mk]);
@@ -2719,7 +2754,7 @@ function CompanyMonthlyRegister({ cloud, companyName, monthsBack = 24 }) {
       const months = pastMonths(monthsBack);
       const out = [];
       for (const mk of months) {
-        const f = (await cloud.load(`factory:${mk}`, [])) || [];
+        const f = toArray((await cloud.load(`factory:${mk}`, [])));
         const mine = f.filter((r) => r.factoryName === companyName);
         if (mine.length === 0) continue;
         const t = { dum: 0, kachra: 0, charbi: 0, machli: 0, paya: 0 };
@@ -2785,7 +2820,7 @@ function OwnerCompanyRegister({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      setCompanies((await cloud.load("meta:companies", [])) || []);
+      setCompanies(toArray((await cloud.load("meta:companies", []))));
       setLoading(false);
     })();
   }, [cloud]);
@@ -2849,12 +2884,12 @@ function WorkerMonthlyOverview({ cloud, worker }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const allDukandars = sortCustomers((await cloud.load("meta:dukandars", [])) || []);
+    const allDukandars = sortCustomers(toArray((await cloud.load("meta:dukandars", []))));
     const mine = allDukandars.filter((d) => d.workerId === worker.id);
     setCustomers(mine);
     if (mine.length && !custForm.dukandarId) setCustForm((f) => ({ ...f, dukandarId: mine[0].id }));
 
-    const cs = (await cloud.load("meta:companies", [])) || [];
+    const cs = toArray((await cloud.load("meta:companies", [])));
     const activeCs = cs.filter((c) => !c.archived);
     setCompanies(activeCs);
     if (activeCs.length && !compForm.companyName) setCompForm((f) => ({ ...f, companyName: activeCs[0].name }));
@@ -2862,7 +2897,7 @@ function WorkerMonthlyOverview({ cloud, worker }) {
     const months = pastMonths(12);
     const compOut = [];
     for (const mk of months) {
-      const f = (await cloud.load(`factory:${mk}`, [])) || [];
+      const f = toArray((await cloud.load(`factory:${mk}`, [])));
       const mine2 = f.filter((r) => r.enteredBy === worker.name);
       if (mine2.length === 0) continue;
       const byCompany = {};
@@ -2882,7 +2917,7 @@ function WorkerMonthlyOverview({ cloud, worker }) {
     if (!custForm.dukandarId) return;
     setCustMsg("");
     const mk = custForm.date.slice(0, 7);
-    const existing = (await cloud.load(`entries:${custForm.dukandarId}:${mk}`, [])) || [];
+    const existing = toArray((await cloud.load(`entries:${custForm.dukandarId}:${mk}`, [])));
     const rec = {
       date: custForm.date,
       dum: Number(custForm.dum) || 0,
@@ -2903,7 +2938,7 @@ function WorkerMonthlyOverview({ cloud, worker }) {
     if (!compForm.companyName || !compForm.qty) return;
     setCompMsg("");
     const mk = compForm.date.slice(0, 7);
-    const existing = (await cloud.load(`factory:${mk}`, [])) || [];
+    const existing = toArray((await cloud.load(`factory:${mk}`, [])));
     const rec = {
       id: uid("F"),
       date: compForm.date,
@@ -3022,7 +3057,7 @@ function OwnerWorkerRegister({ cloud }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      setWorkers((await cloud.load("meta:workers", [])) || []);
+      setWorkers(toArray((await cloud.load("meta:workers", []))));
       setLoading(false);
     })();
   }, [cloud]);
@@ -3101,9 +3136,9 @@ function OwnerManage({ cloud }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    setWorkers((await cloud.load("meta:workers", [])) || []);
-    setDukandars(sortCustomers((await cloud.load("meta:dukandars", [])) || []));
-    setCompanies((await cloud.load("meta:companies", [])) || []);
+    setWorkers(toArray((await cloud.load("meta:workers", []))));
+    setDukandars(sortCustomers(toArray((await cloud.load("meta:dukandars", [])))));
+    setCompanies(toArray((await cloud.load("meta:companies", []))));
     setLoading(false);
   }, [cloud]);
 
